@@ -38,7 +38,8 @@ from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
 from vllm.model_executor.models.interfaces import supports_lora
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.prompt_adapter.worker_manager import LRUCacheWorkerPromptAdapterManager
-from vllm.utils import DeviceMemoryProfiler, is_hip, supports_dynamo
+from vllm.utils import DeviceMemoryProfiler, supports_dynamo
+from vllm.utils import is_hipScopedMarker_available as is_hip
 from vllm.worker.model_runner import ModelRunner
 
 from .config import LoadConfig, ModelConfig

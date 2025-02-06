@@ -229,8 +229,11 @@ class DataParallelPPOActor(BasePPOActor):
 
             self.actor_optimizer.zero_grad()
 
+            print('zyeric update policy: ', torch.distributed.get_rank(), torch.cuda.current_device())
+            # torch.cuda.set_device(torch.distributed.get_rank())
             for data in micro_batches:
-                data = data.cuda()  # actor device is cpu when using offload
+                # data = data.cuda()  # actor device is cpu when using offload
+                data = data.to(torch.cuda.current_device())
                 responses = data['responses']
                 response_length = responses.size(1)
                 attention_mask = data['attention_mask']
@@ -244,6 +247,8 @@ class DataParallelPPOActor(BasePPOActor):
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
+                print('zyeric prob device', old_log_prob.device, log_prob.device)
+                old_log_prob = old_log_prob.to(log_prob.device)
                 pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,
                                                                               advantages=advantages,

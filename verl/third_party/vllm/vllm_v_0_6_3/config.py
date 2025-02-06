@@ -23,7 +23,7 @@ from transformers import PretrainedConfig
 # Add for verl
 from vllm.config import ModelConfig
 from vllm.logger import init_logger
-from vllm.utils import is_hip
+from vllm.utils import is_hipScopedMarker_available as is_hip
 
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.loader import BaseModelLoader
@@ -44,7 +44,7 @@ class LoadFormat(str, enum.Enum):
 class ModelConfig(ModelConfig):
 
     def __init__(self, hf_config: PretrainedConfig, *args, **kwargs) -> None:
-        super().__init__(model=hf_config._name_or_path, tokenizer=hf_config._name_or_path, *args, **kwargs)
+        super().__init__(task='auto', model=hf_config._name_or_path, tokenizer=hf_config._name_or_path, *args, **kwargs)
         self.hf_config = hf_config
 
 

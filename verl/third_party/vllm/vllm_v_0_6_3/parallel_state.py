@@ -250,6 +250,7 @@ def initialize_model_parallel(
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group
+    print('zyeric: ', group_ranks, get_world_group().local_rank, backend, torch.distributed.get_rank())
     _TP = init_model_parallel_group(
         group_ranks,
         get_world_group().local_rank,

@@ -111,8 +111,8 @@ class Worker(Worker):
         ModelRunnerClass: Type[GPUModelRunnerBase] = ModelRunner
         if model_runner_cls is not None:
             ModelRunnerClass = model_runner_cls
-        elif self.model_config.embedding_mode:
-            ModelRunnerClass = EmbeddingModelRunner
+        # elif self.model_config.embedding_mode:
+        #     ModelRunnerClass = EmbeddingModelRunner
         self.model_runner: GPUModelRunnerBase = ModelRunnerClass(
             model,  # [VERL]: add for verl
             model_config,
@@ -297,6 +297,8 @@ def init_worker_distributed_environment(
     distributed_init_method: Optional[str] = "env://",
     local_rank: int = -1,
 ) -> None:
+    print('zyeric: vllm init dist', torch.distributed.get_rank(), torch.cuda.current_device())
+    torch.cuda.set_device(torch.distributed.get_rank())
     """Initialize the distributed environment."""
     set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
 

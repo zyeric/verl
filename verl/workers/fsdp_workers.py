@@ -170,6 +170,9 @@ class ActorRolloutRefWorker(Worker):
 
         # override model kwargs
         actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
+        print('zyeric: finish load model config')
+        print('zyeric: ', torch.distributed.get_rank(), torch.cuda.current_device())
+        torch.cuda.set_device(torch.distributed.get_rank())
 
         if use_remove_padding:
             from verl.models.registry import check_model_support_rmpad
@@ -199,6 +202,7 @@ class ActorRolloutRefWorker(Worker):
                                                                 config=actor_model_config,
                                                                 attn_implementation='flash_attention_2',
                                                                 trust_remote_code=trust_remote_code)
+            print('zyeric: finish load hf model')
             # Apply Liger kernel to the model if use_liger is set to True
             if use_liger:
                 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
@@ -206,10 +210,13 @@ class ActorRolloutRefWorker(Worker):
 
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
+            print('zyeric: finish cast dtype')
 
             if enable_gradient_checkpointing:
                 actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
+            print('zyeric: finish gradient ckpt')
         torch.distributed.barrier()
+        print('zyeric: finish barrier')
 
         if self.rank == 0:
             print_model_size(actor_module)
@@ -370,6 +377,7 @@ class ActorRolloutRefWorker(Worker):
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref:
+            print('zyeric: start build ref model')
             self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
                                                                fsdp_config=self.config.ref.fsdp_config,
                                                                optim_config=None,
@@ -379,10 +387,12 @@ class ActorRolloutRefWorker(Worker):
                                                                    'trust_remote_code', False),
                                                                use_liger=self.config.model.get('use_liger', False),
                                                                role='ref')[0]
+            print('zyeric: finish build ref model')
             OmegaConf.set_struct(self.config.ref, True)
             with open_dict(self.config.ref):
                 self.config.ref.use_remove_padding = use_remove_padding
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+            print('zyeric: finish wrap ref as DPActor')
 
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
@@ -677,6 +687,8 @@ class CriticWorker(Worker):
 
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
+        print('zyeric: ', torch.distributed.get_rank(), torch.cuda.current_device())
+        torch.cuda.set_device(torch.distributed.get_rank())
 
         # Note: We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
         critic_module = FSDP(critic_module,

@@ -162,7 +162,8 @@ class LLMEngine(LLMEngine):
             observability_config,
             model_config.seed,
             model_config.served_model_name,
-            scheduler_config.use_v2_block_manager,
+            # scheduler_config.use_v2_block_manager,
+            'zyeric-debug',
             scheduler_config.num_scheduler_steps,
             scheduler_config.chunked_prefill_enabled,
             scheduler_config.multi_step_stream_outputs,
@@ -223,8 +224,9 @@ class LLMEngine(LLMEngine):
             observability_config=self.observability_config,
         )
 
-        if not self.model_config.embedding_mode:
-            self._initialize_kv_caches()
+        # if not self.model_config.embedding_mode:
+        #     self._initialize_kv_caches()
+        self._initialize_kv_caches()
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():
@@ -332,6 +334,8 @@ class LLMEngine(LLMEngine):
                 get_tokenizer_for_seq,
             ),
         )
+
+        self.seq_id_to_seq_group = {}
 
     # TODO(sgm): add for verl but we may not tokenizer in Rollout
     def _init_tokenizer(self, tokenizer, **tokenizer_init_kwargs):
