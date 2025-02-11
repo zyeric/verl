@@ -23,7 +23,7 @@ from transformers import PretrainedConfig
 # Add for verl
 from vllm.config import ModelConfig
 from vllm.logger import init_logger
-from vllm.utils import is_hipScopedMarker_available as is_hip
+from vllm.utils import is_hip
 
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.loader import BaseModelLoader
