@@ -2,6 +2,8 @@ set -x
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
+PPO_MBS=10
+
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$HOME/data/gsm8k/train.parquet \
@@ -14,7 +16,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=80 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MBS \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -38,4 +40,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=15 2>&1 | tee run_qwen2.5_14b_instruct_grpo.log
+    trainer.total_epochs=15 2>&1 | tee run_qwen2.5_14b_instruct_grpo_mbs_$PPO_MBS.log
