@@ -8,7 +8,7 @@ python3 verl/trainer/main_ppo.py \
     data.val_batch_size=8 \
     data.max_prompt_length=4096 \
     data.max_response_length=4096 \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-Coder-7B \
+    actor_rollout_ref.model.path=Qwen/Qwen2.5-14B-Instruct \
     actor_rollout_ref.actor.optim.lr=3e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -32,11 +32,11 @@ python3 verl/trainer/main_ppo.py \
     trainer.critic_warmup=0 \
     trainer.logger=["console"] \
     trainer.project_name="CP-Zero" \
-    trainer.experiment_name="Qwen-7B-Coder" \
+    trainer.experiment_name="Qwen-14B-Instruct" \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.default_local_dir=./cp_zerp_checkpoints \
+    trainer.default_local_dir=./cp_zerp_checkpoints_14b \
     trainer.default_hdfs_dir=null \
     trainer.save_freq=500 \
     trainer.test_freq=50 \
-    trainer.total_epochs=5 2>&1 | tee verl_cp_zero_0214.log
+    trainer.total_epochs=5 2>&1 | tee verl_cp_zero_0214_14b.log
