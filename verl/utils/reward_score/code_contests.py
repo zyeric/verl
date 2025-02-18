@@ -13,7 +13,7 @@ import requests
 
 def send_request(language, solution, input_data, expected_output):
     url = 'http://localhost:8000/judge'
-    print(input_data, expected_output)
+    # print(input_data, expected_output)
     data = {
         'type': language,
         'solution': solution,
@@ -22,7 +22,7 @@ def send_request(language, solution, input_data, expected_output):
     }
     response = requests.post(url, json=data)
     response_json = response.json()
-    print(response_json)
+    # print(response_json)
     return response_json
 
 class OnlineJudge(object):
