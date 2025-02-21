@@ -143,7 +143,7 @@ class OnlineJudge(object):
 
         if all_tests == 0:
             return 0
-        return int(5.0 * correct_tests / all_tests)
+        return int(min(5.0, all_tests / 2) * correct_tests / all_tests)
     
     def score(self, pid, code_string):
         all_tests, correct_tests = self.run(pid, code_string)
