@@ -113,6 +113,14 @@ class TaskRunner:
             actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else ActorRolloutRefWorker
             ray_worker_group_cls = NVMegatronRayWorkerGroup
 
+        elif config.actor_rollout_ref.actor.strategy == "nnscaler":
+            assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
+            from verl.single_controller.ray.nnscaler import NVNNScalerRayWorkerGroup
+            from verl.workers.nnscaler_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
+
+            actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else ActorRolloutRefWorker
+            ray_worker_group_cls = NVNNScalerRayWorkerGroup
+
         else:
             raise NotImplementedError
 
@@ -186,6 +194,7 @@ class TaskRunner:
         )
         # Initialize the workers of the trainer.
         trainer.init_workers()
+        assert False, "TODO: check fit logic"
         # Start the training process.
         trainer.fit()
 

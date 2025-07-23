@@ -701,6 +701,8 @@ def _determine_fsdp_megatron_base_class(mros: List):
     for cls in mros[0]:
         if cls.__name__ == "MegatronWorker":
             return cls
+        if cls.__name__ == "NNScalerWorker":
+            return cls
         if cls.__name__ == "Worker":
             return cls
     raise ValueError(f"Cannot determine base class for {mros}")
