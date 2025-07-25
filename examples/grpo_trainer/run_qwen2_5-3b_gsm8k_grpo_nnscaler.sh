@@ -1,6 +1,6 @@
 set -x
 
-HF_MODEL_PATH=Qwen/Qwen3-30B-A3B
+HF_MODEL_PATH=../Qwen2.5-3B-Instruct
 DIST_CKPT_PATH=${DIST_CKPT_PATH}
 
 # python scripts/converter_hf_to_mcore.py --hf_model_path $HF_MODEL_PATH --output_path $DIST_CKPT_PATH

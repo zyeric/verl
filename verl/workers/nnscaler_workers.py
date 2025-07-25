@@ -82,7 +82,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     """
 
     def __init__(self, config: DictConfig, role: str):
-        NNScalerWorker.__init__(self, nnscaler_cfg=config.actor.nnscaler)
+        NNScalerWorker.__init__(self)
         self.config = config
 
         # NOTE(sgm): We utilize colocate WorkerGroup by default.
@@ -161,14 +161,88 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             self._ref_is_offload_param = self.config.ref.nnscaler.get("param_offload", False)
 
     def _build_model_optimizer(self, model_path, optim_config, override_model_config, override_transformer_config):
-        from megatron.core.models.gpt.gpt_model import ModelType
+        # from megatron.core.models.gpt.gpt_model import ModelType
 
-        from verl.utils.megatron.optimizer import get_megatron_optimizer, get_megatron_optimizer_param_scheduler
-        from verl.utils.megatron_utils import get_model, init_megatron_optim_config
+        # from verl.utils.megatron.optimizer import get_megatron_optimizer, get_megatron_optimizer_param_scheduler
+        # from verl.utils.megatron_utils import get_model, init_megatron_optim_config
         from verl.utils.model import get_generation_config, print_model_size
+        from verl.utils.torch_dtypes import PrecisionType
+        from verl.utils.nnscaler_utils import register_flash_attention
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
+
+        from nnscaler import parallelize, ComputeConfig
+        from nnscaler.policies import pas_autodist
+
+        # register_flash_attention()
+
+        nnscaler_config = self.config.actor.nnscaler
 
         self._init_hf_config_and_tf_config(model_path, model_path, self.dtype, override_model_config, override_transformer_config, self.config.model.get("trust_remote_code", False))
+
+        # align with fsdp_workers' behavior
+        torch_dtype = nnscaler_config.get("model_dtype", None)
+        if torch_dtype is None:
+            torch_dtype = torch.float32 if self._is_actor else torch.bfloat16
+        else:
+            torch_dtype = PrecisionType.to_dtype(torch_dtype)
+
         self.generation_config = get_generation_config(self.local_path)
+
+        # TODO(yizhu1): check tracing with meta_tensor
+
+        # Actor:
+        # input:
+        #   - input_ids: torch.Tensor, shape [batch_size, seq_len]
+        #   - attention_mask: torch.Tensor, shape [batch_size, seq_len]
+        #   - position_ids: torch.Tensor, shape [batch_size, seq_len]
+        # output:
+        #   - logits: torch.Tensor, shape [batch_size, seq_len, vocab_size]
+        class ActorWrapper(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
+
+            def forward(self, input_ids, attention_mask, position_ids):
+                if torch_dtype == torch.float32:
+                    ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+                else:
+                    import contextlib
+                    ctx = contextlib.nullcontext()
+                with ctx:
+                    output = self.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids)
+                    return output.logits
+
+        actor_module = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=self.local_path,
+            torch_dtype=torch_dtype,
+            config=self.hf_config,
+            trust_remote_code=self.config.model.get("trust_remote_code", False),
+        )
+
+        actor_wrapper = ActorWrapper(actor_module)
+
+        # TODO(yizhu1): remove hard code here 
+        bsz = 1
+        seq_len = 4096
+        dummy_input = {
+            "input_ids": torch.randint(0, 1000, (bsz, seq_len), dtype=torch.int64),
+            "attention_mask": torch.ones((bsz, seq_len), dtype=torch.int64),
+            "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
+        }
+        compute_config = ComputeConfig(
+            plan_ngpus=4,
+            runtime_ngpus=4,
+            constant_folding=True,
+            use_zero=1,
+            inference_only=self._is_ref,
+        )
+        module = parallelize(
+            module_or_module_class=actor_wrapper,
+            dummy_forward_args=dummy_input,
+            pas_policy=pas_autodist,
+            compute_config=compute_config
+        )
+        assert False, "TODO"
 
         def megatron_actor_model_provider(pre_process, post_process):
             from verl.models.mcore import init_mcore_model
@@ -193,7 +267,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
             if self.rank == 0:
                 print_model_size(actor_module[0])
-            log_gpu_memory_usage("After MegatronPPOActor init", logger=logger)
+            log_gpu_memory_usage("After NNScalerPPOActor init", logger=logger)
         elif self._is_ref:
             print(f"self.config.ref.load_weight: {self.config.ref.load_weight}")
             ref_module = get_model(
@@ -354,9 +428,9 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         override_model_config = OmegaConf.to_container(self.config.model.get("override_config", OmegaConf.create()))
         if self._is_actor:
-            override_transformer_config = OmegaConf.to_container(self.config.actor.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True)
+            override_transformer_config = OmegaConf.to_container(self.config.actor.nnscaler.get("override_transformer_config", OmegaConf.create()), resolve=True)
         elif self._is_ref:
-            override_transformer_config = OmegaConf.to_container(self.config.ref.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True)
+            override_transformer_config = OmegaConf.to_container(self.config.ref.nnscaler.get("override_transformer_config", OmegaConf.create()), resolve=True)
         else:
             override_transformer_config = None
         self.param_dtype = torch.bfloat16
@@ -372,14 +446,16 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 override_transformer_config=override_transformer_config,
             )
             if self._is_offload_param:
+                assert False, "TODO: implement offload param for NNScalerWorker"
                 offload_megatron_model_to_cpu(self.actor_module)
                 log_gpu_memory_usage("After offload actor params and grad during init", logger=logger)
             if self._is_offload_optimizer:
+                assert False, "TODO: implement offload optimizer for NNScalerWorker"
                 offload_megatron_optimizer(self.actor_optimizer)
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
         if self._is_actor:
-            self.actor = MegatronPPOActor(
+            self.actor = NNScalerPPOActor(
                 config=self.config.actor,
                 model_config=self.actor_model_config,
                 hf_config=self.hf_config,
@@ -387,7 +463,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 actor_module=self.actor_module,
                 actor_optimizer=self.actor_optimizer,
             )
-            log_gpu_memory_usage("After MegatronPPOActor init", logger=logger)
+            log_gpu_memory_usage("After NNScalerPPOActor init", logger=logger)
 
         if self._is_rollout:
             self.rollout, self.sharding_manager = self._build_rollout(trust_remote_code=self.config.model.get("trust_remote_code", False))
@@ -403,7 +479,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 override_transformer_config=override_transformer_config,
             )
             log_gpu_memory_usage("After ref model init", logger=logger)
-            self.ref_policy = MegatronPPOActor(
+            self.ref_policy = NNScalerPPOActor(
                 config=self.config.ref,
                 model_config=self.ref_model_config,
                 hf_config=self.hf_config,

@@ -16,22 +16,19 @@ from verl.single_controller.base.worker import DistGlobalInfo, DistRankInfo, Wor
 
 
 class NNScalerWorker(Worker):
-    def __init__(self, cuda_visible_devices=None, nnscaler_cfg=None) -> None:
+    def __init__(self, cuda_visible_devices=None) -> None:
         super().__init__(cuda_visible_devices)
-        print("NNScalerWorker init", nnscaler_cfg)
-        assert nnscaler_cfg is not None, "nnscaler_cfg must be provided to NNScalerWorker"
-        self.nnscaler_cfg = nnscaler_cfg
 
     def get_nnscaler_global_info(self):
         # TODO(yizhu1): refine implementation here
-        info = DistGlobalInfo(tp_size=1, dp_size=self.nnscaler_cfg.runtime_ngpus // self.nnscaler_cfg.plan_ngpus, pp_size=1, cp_size=self.nnscaler_cfg.plan_ngpus)
+        info = DistGlobalInfo(tp_size=1, dp_size=1, pp_size=1, cp_size=4)
         return info
 
     def get_nnscaler_rank_info(self):
         # TODO(yizhu1): refine implementation here
         import torch
         rank = torch.distributed.get_rank()
-        info = DistRankInfo(tp_rank=1, dp_rank=rank // self.nnscaler_cfg.plan_ngpus, pp_rank=1, cp_rank=rank % self.nnscaler_cfg.plan_ngpus)
+        info = DistRankInfo(tp_rank=1, dp_rank=0, pp_rank=1, cp_rank=rank)
         return info
 
     def _init_hf_config_and_tf_config(
@@ -43,10 +40,9 @@ class NNScalerWorker(Worker):
         override_transformer_config,
         trust_remote_code=False,
     ):
-        assert False, "TODO: implement this method for NNScalerWorker"
         from transformers import AutoConfig
 
-        from verl.models.mcore import hf_to_mcore_config
+        # from verl.models.mcore import hf_to_mcore_config
         from verl.utils import hf_processor, hf_tokenizer
         from verl.utils.fs import copy_to_local
         from verl.utils.model import update_model_config
@@ -70,7 +66,7 @@ class NNScalerWorker(Worker):
                 self.tokenizer.chat_template = self.config.model.custom_chat_template
 
         # Step 2: get the hf
-        hf_config = AutoConfig.from_pretrained(self.local_path, trust_remote_code=trust_remote_code)
+        hf_config = AutoConfig.from_pretrained(self.local_path, trust_remote_code=trust_remote_code, attn_implementation="flash_attention_2")
 
         # Step 3: override the hf config
         override_config_kwargs = {
@@ -84,22 +80,22 @@ class NNScalerWorker(Worker):
         self.architectures = getattr(hf_config, "architectures", None)
         if self.rank == 0:
             print(f"Model config after override: {hf_config}")
-        tf_config = hf_to_mcore_config(hf_config, dtype, **override_transformer_config)
+        # tf_config = hf_to_mcore_config(hf_config, dtype, **override_transformer_config)
 
-        def add_optimization_config_to_tf_config(tf_config):
-            # add optimization config to tf_config, e.g. checkpointing
-            if self.config.model.get("enable_gradient_checkpointing", False):
-                gradient_checkpointing_cfg = dict(self.config.model.get("gradient_checkpointing_kwargs", dict()))
-                tf_config.recompute_method = gradient_checkpointing_cfg.get("activations_checkpoint_method", "full")
-                tf_config.recompute_granularity = gradient_checkpointing_cfg.get("activations_checkpoint_granularity", "full")
-                tf_config.recompute_num_layers = gradient_checkpointing_cfg.get("activations_checkpoint_num_layers", -1)
-            if megatron_config := self.config.get("megatron", {}):
-                if extra := megatron_config.get("extra", {}):
-                    for k, v in extra.items():
-                        setattr(tf_config, k, v)
+        # def add_optimization_config_to_tf_config(tf_config):
+        #     # add optimization config to tf_config, e.g. checkpointing
+        #     if self.config.model.get("enable_gradient_checkpointing", False):
+        #         gradient_checkpointing_cfg = dict(self.config.model.get("gradient_checkpointing_kwargs", dict()))
+        #         tf_config.recompute_method = gradient_checkpointing_cfg.get("activations_checkpoint_method", "full")
+        #         tf_config.recompute_granularity = gradient_checkpointing_cfg.get("activations_checkpoint_granularity", "full")
+        #         tf_config.recompute_num_layers = gradient_checkpointing_cfg.get("activations_checkpoint_num_layers", -1)
+        #     if megatron_config := self.config.get("megatron", {}):
+        #         if extra := megatron_config.get("extra", {}):
+        #             for k, v in extra.items():
+        #                 setattr(tf_config, k, v)
 
-        add_optimization_config_to_tf_config(tf_config)
+        # add_optimization_config_to_tf_config(tf_config)
 
-        print(f"TF config: {tf_config}")
+        # print(f"TF config: {tf_config}")
         self.hf_config = hf_config
-        self.tf_config = tf_config
+        # self.tf_config = tf_config
