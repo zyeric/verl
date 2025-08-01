@@ -167,13 +167,13 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # from verl.utils.megatron_utils import get_model, init_megatron_optim_config
         from verl.utils.model import get_generation_config, print_model_size
         from verl.utils.torch_dtypes import PrecisionType
-        from verl.utils.nnscaler_utils import register_flash_attention
+        from verl.utils.nnscaler_utils import hf_patch
         from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
 
         from nnscaler import parallelize, ComputeConfig
         from nnscaler.policies import pas_autodist
 
-        # register_flash_attention()
+        hf_patch()
 
         nnscaler_config = self.config.actor.nnscaler
 
@@ -187,6 +187,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
         self.generation_config = get_generation_config(self.local_path)
+
+        # build nnscaler model
 
         # TODO(yizhu1): check tracing with meta_tensor
 
@@ -222,6 +224,14 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         actor_wrapper = ActorWrapper(actor_module)
 
         # TODO(yizhu1): remove hard code here 
+        instance_name = nnscaler_config.get("instance_name", "nnscaler_rl")
+        if self._is_actor:
+            instance_name = f"{instance_name}_actor"
+        elif self._is_ref:
+            instance_name = f"{instance_name}_ref"
+        else:
+            raise ValueError(f"Unsupported role: {self.role}")
+
         bsz = 1
         seq_len = 4096
         dummy_input = {
@@ -236,63 +246,74 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             use_zero=1,
             inference_only=self._is_ref,
         )
-        module = parallelize(
+        # TODO(yizhu1):
+        # - memory constraints
+        # - recompute modules
+        # - partition constraints
+        p_module = parallelize(
             module_or_module_class=actor_wrapper,
             dummy_forward_args=dummy_input,
             pas_policy=pas_autodist,
-            compute_config=compute_config
+            compute_config=compute_config,
+            instance_name=instance_name,
         )
-        assert False, "TODO"
-
-        def megatron_actor_model_provider(pre_process, post_process):
-            from verl.models.mcore import init_mcore_model
-
-            parallel_model = init_mcore_model(self.tf_config, self.hf_config, pre_process, post_process, share_embeddings_and_output_weights=self.share_embeddings_and_output_weights, value=False, freeze_moe_router=override_model_config.get("moe_config", {}).get("freeze_moe_router", False))
-            parallel_model.to(get_device_name())
-            return parallel_model
 
         # Step 3: initialize the megatron model
         if self._is_actor and self._is_rollout:
-            actor_module = get_model(
-                megatron_actor_model_provider,
-                wrap_with_ddp=True,
-                use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,
-            )
+            actor_module = p_module
             print(f"actor_module: {len(actor_module)}")
-            if self.config.actor.load_weight:
-                if self.config.actor.megatron.use_dist_checkpointing:
-                    load_mcore_dist_weights(actor_module, self.config.actor.megatron.dist_checkpointing_path, is_value_model=False)
-                else:
-                    load_megatron_gptmodel_weights(self.config, self.hf_config, actor_module, params_dtype=self.dtype, is_value_model=False)
+            # if self.config.actor.load_weight:
+            #     if self.config.actor.megatron.use_dist_checkpointing:
+            #         load_mcore_dist_weights(actor_module, self.config.actor.megatron.dist_checkpointing_path, is_value_model=False)
+            #     else:
+            #         load_megatron_gptmodel_weights(self.config, self.hf_config, actor_module, params_dtype=self.dtype, is_value_model=False)
 
             if self.rank == 0:
                 print_model_size(actor_module[0])
             log_gpu_memory_usage("After NNScalerPPOActor init", logger=logger)
         elif self._is_ref:
             print(f"self.config.ref.load_weight: {self.config.ref.load_weight}")
-            ref_module = get_model(
-                model_provider_func=megatron_actor_model_provider,
-                model_type=ModelType.encoder_or_decoder,
-                wrap_with_ddp=False,
-                use_distributed_optimizer=self.config.ref.megatron.use_distributed_optimizer,
-            )
+            ref_module = p_module
             # ref_module = nn.ModuleList(ref_module)
 
-            if self.config.ref.load_weight:  # should align with the actor:
-                assert self.config.actor.load_weight == self.config.ref.load_weight
-                print("load ref weight start")
-                if self.config.ref.megatron.use_dist_checkpointing:
-                    load_mcore_dist_weights(ref_module, self.config.ref.megatron.dist_checkpointing_path, is_value_model=False)
-                else:
-                    load_megatron_gptmodel_weights(self.config, self.hf_config, ref_module, params_dtype=self.dtype, is_value_model=False)
+            # if self.config.ref.load_weight:  # should align with the actor:
+            #     assert self.config.actor.load_weight == self.config.ref.load_weight
+            #     print("load ref weight start")
+            #     if self.config.ref.megatron.use_dist_checkpointing:
+            #         load_mcore_dist_weights(ref_module, self.config.ref.megatron.dist_checkpointing_path, is_value_model=False)
+            #     else:
+            #         load_megatron_gptmodel_weights(self.config, self.hf_config, ref_module, params_dtype=self.dtype, is_value_model=False)
             log_gpu_memory_usage("After ref module init", logger=logger)
             return ref_module, self.hf_config
 
         # TODO: add more optimizer args into config
         if self._is_actor:
-            optim_config_megatron = init_megatron_optim_config(optim_config)
-            actor_optimizer = get_megatron_optimizer(model=actor_module, config=optim_config_megatron)
-            actor_optimizer_scheduler = get_megatron_optimizer_param_scheduler(optimizer=actor_optimizer, config=optim_config)
+            optim_kwargs = {
+                "lr": self.config.actor.optim.lr,
+                "weight_decay": self.config.actor.optim.weight_decay,
+                "betas": (0.9, 0.999),
+                "eps": 1e-8,
+            }
+            actor_optimizer = build_optimizer(actor_module, torch.optim.AdamW, compute_config,)
+
+            total_steps = optim_config.get("total_training_steps", 0)
+            num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
+            warmup_style = optim_config.get("warmup_style", "constant")
+            min_lr_ratio = optim_config.get("min_lr_ratio", 0.0)
+            num_cycles = optim_config.get("num_cycles", 0.5)
+            if num_warmup_steps < 0:
+                num_warmup_steps_ratio = optim_config.get("lr_warmup_steps_ratio", 0.0)
+                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+
+            if self.rank == 0:
+                print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
+
+            if warmup_style == "constant":
+                actor_optimizer_scheduler = get_constant_schedule_with_warmup(optimizer=actor_optimizer, num_warmup_steps=num_warmup_steps)
+            elif warmup_style == "cosine":
+                actor_optimizer_scheduler = get_cosine_schedule_with_warmup(optimizer=actor_optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps, min_lr_ratio=min_lr_ratio, num_cycles=num_cycles)
+            else:
+                raise NotImplementedError(f"Warmup style {warmup_style} is not supported")
         else:
             optim_config = None
             actor_optimizer = None
