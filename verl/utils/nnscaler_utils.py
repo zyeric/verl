@@ -14,7 +14,7 @@ def qwen2_attn_forward(
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb
-    from nnscaler.graph.parser.external.transformers import flash_attention_forward
+    from nnscaler.graph.parser.external.tf_ring import flash_attention_forward_ring
 
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, self.head_dim)
@@ -39,7 +39,7 @@ def qwen2_attn_forward(
     ):
         sliding_window = self.config.sliding_window
 
-    attn_output = flash_attention_forward(
+    attn_output = flash_attention_forward_ring(
         # self,
         query_states,
         key_states,

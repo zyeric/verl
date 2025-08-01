@@ -239,17 +239,22 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             "attention_mask": torch.ones((bsz, seq_len), dtype=torch.int64),
             "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
         }
+        # TODO(yizhu1):
+        # Since we are focusing on the long context training scenario, we will force to
+        # recompute the model by layer, and force to partition the attention by sequence
+        # length dimension. To make the sharding easier, model weights are not partitioned
+        # currently.
         compute_config = ComputeConfig(
             plan_ngpus=4,
             runtime_ngpus=4,
             constant_folding=True,
             use_zero=1,
             inference_only=self._is_ref,
+            pas_config={
+                "partition_constraints_path": "./examples/nnscaler/seq_parallel.yaml",
+                "recompute_modules": "Qwen2DecoderLayer",
+            }
         )
-        # TODO(yizhu1):
-        # - memory constraints
-        # - recompute modules
-        # - partition constraints
         p_module = parallelize(
             module_or_module_class=actor_wrapper,
             dummy_forward_args=dummy_input,
