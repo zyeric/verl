@@ -62,7 +62,6 @@ class NNScalerPPOActor(BasePPOActor):
         config,
         model_config,
         hf_config,
-        tf_config,
         actor_module: nn.ModuleList,
         actor_optimizer,
         # actor_optimizer: DistributedOptimizer,
@@ -86,7 +85,6 @@ class NNScalerPPOActor(BasePPOActor):
             model_config (OmegaConf): model configuration. It must contains ``model_config.vocab_size`` and
                 ``model_config.hidden_size``
             hf_config (PretrainedConfig): huggingface config
-            tf_config (TransformerConfig): mcore transformer config
             actor_module (nn.ModuleList): actor module is a ModuleList that contains a list of nn.Module in this pp stage.
                 each nn.Module in this rank holds a vpp module chunk. See https://arxiv.org/pdf/2104.04473.pdf for more details.
                 The actor module has some constraints to follow in order to use the updating logics implemented here
@@ -109,7 +107,6 @@ class NNScalerPPOActor(BasePPOActor):
         >>> actor = MegatronPPOActor(config=config,
         >>>                          model_config=actor_model_config,
         >>>                          hf_config=hf_config,
-        >>>                          tf_config=tf_config,
         >>>                          actor_module=actor_module,
         >>>                          actor_optimizer=actor_optimizer)
         """
@@ -117,7 +114,6 @@ class NNScalerPPOActor(BasePPOActor):
         self._validate_config(config)
         self.model_config = model_config
         self.hf_config = hf_config
-        self.tf_config = tf_config
         self.actor_module = actor_module
         self.actor_optimizer: DistributedOptimizer = actor_optimizer
         self.prof = Profiler(self.config.profile)
@@ -127,7 +123,6 @@ class NNScalerPPOActor(BasePPOActor):
                 "overlap_dp_param_comm": False,
                 "overlap_dp_grad_comm": False,
                 "gradient_accumulation_steps": 1,
-                "sequence_parallel": self.tf_config.sequence_parallel,
                 "DDP_impl": "local",
                 "layernorm_allreduce_bucket_threshold": 0,
                 "pipeline_model_parallel_split_rank": None,
@@ -135,18 +130,16 @@ class NNScalerPPOActor(BasePPOActor):
             }
         )
 
-        config = get_model_config(self.actor_module[0])
-        print(config)
-        config.finalize_model_grads_func = finalize_model_grads
+        # TODO(yizhu1): seems we don't need it in nnScaler ?
+        # config = get_model_config(self.actor_module[0])
+        # print(config)
+        # config.finalize_model_grads_func = finalize_model_grads
 
     def _validate_config(self, config) -> None:
-        """Validate config options not implemented for Megatron backend"""
+        """Validate config options not implemented for nnScaler backend"""
         assert config.get("ulysses_sequence_parallel_size", 1) == 1
         if config.get("shuffle", False):
             assert config.data_loader_seed is not None, "If shuffle dataloader, seed must be manually set"
-        if config.megatron.tensor_model_parallel_size == 1:
-            print("[Warining] Because actor tp size == 1, set sp to False")
-            config.megatron.sequence_parallel = False
         self.config = config
 
     @GPUMemoryLogger(role="megatron actor", logger=logger)

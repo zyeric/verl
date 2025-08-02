@@ -170,7 +170,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         from verl.utils.nnscaler_utils import hf_patch
         from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
 
-        from nnscaler import parallelize, ComputeConfig
+        from nnscaler import parallelize, ComputeConfig, build_optimizer
         from nnscaler.policies import pas_autodist
 
         hf_patch()
@@ -185,6 +185,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             torch_dtype = torch.float32 if self._is_actor else torch.bfloat16
         else:
             torch_dtype = PrecisionType.to_dtype(torch_dtype)
+        print(f"NNScalerWorker: using torch_dtype: {torch_dtype}")
 
         self.generation_config = get_generation_config(self.local_path)
 
@@ -236,6 +237,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         seq_len = 4096
         dummy_input = {
             "input_ids": torch.randint(0, 1000, (bsz, seq_len), dtype=torch.int64),
+            # TODO(yizhu1): seems attention_mask should be None for packing
             "attention_mask": torch.ones((bsz, seq_len), dtype=torch.int64),
             "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
         }
@@ -252,9 +254,13 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             inference_only=self._is_ref,
             pas_config={
                 "partition_constraints_path": "./examples/nnscaler/seq_parallel.yaml",
+                # Note: recompute_modules will not take effect for the reference model, since
+                # reference model is only used for log probability computation and does not
+                # require backward pass.
                 "recompute_modules": "Qwen2DecoderLayer",
             }
         )
+        print(f'nnScaler parallelize model for {self.role}, start at {datetime.datetime.now()}')
         p_module = parallelize(
             module_or_module_class=actor_wrapper,
             dummy_forward_args=dummy_input,
@@ -266,7 +272,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # Step 3: initialize the megatron model
         if self._is_actor and self._is_rollout:
             actor_module = p_module
-            print(f"actor_module: {len(actor_module)}")
             # if self.config.actor.load_weight:
             #     if self.config.actor.megatron.use_dist_checkpointing:
             #         load_mcore_dist_weights(actor_module, self.config.actor.megatron.dist_checkpointing_path, is_value_model=False)
@@ -274,12 +279,11 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             #         load_megatron_gptmodel_weights(self.config, self.hf_config, actor_module, params_dtype=self.dtype, is_value_model=False)
 
             if self.rank == 0:
-                print_model_size(actor_module[0])
+                print_model_size(actor_module)
             log_gpu_memory_usage("After NNScalerPPOActor init", logger=logger)
         elif self._is_ref:
             print(f"self.config.ref.load_weight: {self.config.ref.load_weight}")
             ref_module = p_module
-            # ref_module = nn.ModuleList(ref_module)
 
             # if self.config.ref.load_weight:  # should align with the actor:
             #     assert self.config.actor.load_weight == self.config.ref.load_weight
@@ -291,15 +295,17 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             log_gpu_memory_usage("After ref module init", logger=logger)
             return ref_module, self.hf_config
 
-        # TODO: add more optimizer args into config
         if self._is_actor:
+            from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
+
             optim_kwargs = {
                 "lr": self.config.actor.optim.lr,
                 "weight_decay": self.config.actor.optim.weight_decay,
-                "betas": (0.9, 0.999),
+                "betas": optim_config.get("betas", (0.9, 0.999)),
+                "weight_decay": optim_config.get("weight_decay", 1e-2),
                 "eps": 1e-8,
             }
-            actor_optimizer = build_optimizer(actor_module, torch.optim.AdamW, compute_config,)
+            actor_optimizer = build_optimizer(actor_module, torch.optim.AdamW, compute_config, **optim_kwargs)
 
             total_steps = optim_config.get("total_training_steps", 0)
             num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
@@ -485,7 +491,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 config=self.config.actor,
                 model_config=self.actor_model_config,
                 hf_config=self.hf_config,
-                tf_config=self.tf_config,
                 actor_module=self.actor_module,
                 actor_optimizer=self.actor_optimizer,
             )
@@ -509,7 +514,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 config=self.config.ref,
                 model_config=self.ref_model_config,
                 hf_config=self.hf_config,
-                tf_config=self.tf_config,
                 actor_module=self.ref_module,
                 actor_optimizer=None,
             )
