@@ -32,7 +32,7 @@ from verl import DataProto
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.single_controller.base.nnscaler.worker import NNScalerWorker
 from verl.utils import hf_tokenizer, omega_conf_to_dataclass
-# from verl.utils.checkpoint.megatron_checkpoint_manager import MegatronCheckpointManager
+from verl.utils.checkpoint.nnscaler_checkpoint_manager import NNScalerCheckpointManager
 from verl.utils.debug import DistProfiler, DistProfilerExtension, GPUMemoryLogger, ProfilerConfig, log_gpu_memory_usage, simple_timer
 from verl.utils.debug.performance import reduce_timing
 from verl.utils.device import get_device_id, get_device_name, get_nccl_backend, get_torch_device
@@ -272,11 +272,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # Step 3: initialize the megatron model
         if self._is_actor and self._is_rollout:
             actor_module = p_module
-            # if self.config.actor.load_weight:
-            #     if self.config.actor.megatron.use_dist_checkpointing:
-            #         load_mcore_dist_weights(actor_module, self.config.actor.megatron.dist_checkpointing_path, is_value_model=False)
-            #     else:
-            #         load_megatron_gptmodel_weights(self.config, self.hf_config, actor_module, params_dtype=self.dtype, is_value_model=False)
+            print(f"Weight loading has been down during parallelization in nnscaler, you can set `config.actor.load_weight` to False.")
 
             if self.rank == 0:
                 print_model_size(actor_module)
@@ -285,13 +281,9 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             print(f"self.config.ref.load_weight: {self.config.ref.load_weight}")
             ref_module = p_module
 
-            # if self.config.ref.load_weight:  # should align with the actor:
-            #     assert self.config.actor.load_weight == self.config.ref.load_weight
-            #     print("load ref weight start")
-            #     if self.config.ref.megatron.use_dist_checkpointing:
-            #         load_mcore_dist_weights(ref_module, self.config.ref.megatron.dist_checkpointing_path, is_value_model=False)
-            #     else:
-            #         load_megatron_gptmodel_weights(self.config, self.hf_config, ref_module, params_dtype=self.dtype, is_value_model=False)
+            if self.config.ref.load_weight:  # should align with the actor:
+                assert self.config.actor.load_weight == self.config.ref.load_weight
+                print(f"Weight loading has been down during parallelization in nnscaler, you can set `config.actor.load_weight` to False.")
             log_gpu_memory_usage("After ref module init", logger=logger)
             return ref_module, self.hf_config
 
@@ -345,7 +337,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             from torch.distributed.device_mesh import init_device_mesh
 
             from verl.workers.rollout.vllm_rollout import vllm_mode, vLLMRollout
-            from verl.workers.sharding_manager.megatron_vllm import MegatronVLLMShardingManager
+            from verl.workers.sharding_manager.nnscaler_vllm import NNScalerVLLMShardingManager
 
             # NOTE(sgm): If the QKV and gate_up projection layer are concate together in actor,
             # we will reorganize their weight format when resharding from actor to rollout.
@@ -378,23 +370,18 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 )
             log_gpu_memory_usage("After building vllm rollout", logger=logger)
 
-            # perform weight resharding between actor and rollout
-            from verl.models.mcore import get_mcore_weight_converter
-
-            weight_converter = get_mcore_weight_converter(self.actor_model_config, self.dtype)
-            sharding_manager = MegatronVLLMShardingManager(
+            sharding_manager = NNScalerVLLMShardingManager(
+                module=self.actor.actor_module,
                 inference_engine=rollout.inference_engine,
                 model_config=self.actor_model_config,
-                transformer_config=self.tf_config,
-                layer_name_mapping=layer_name_mapping,
-                actor_module=self.actor.actor_module,
-                weight_converter=weight_converter,
                 device_mesh=rollout_device_mesh,
                 offload_param=self._is_offload_param,
             )
             log_gpu_memory_usage("After building sharding manager", logger=logger)
 
         elif self.config.rollout.name in ["sglang", "sglang_async"]:
+            raise NotImplementedError("SGLang rollout is not supported in nnscaler yet, please use vllm rollout instead.")
+
             if self.config.rollout.name == "sglang_async":
                 warnings.warn(
                     "'sglang_async' has been deprecated and merged into 'sglang'. Please use 'sglang' going forward.",
@@ -442,7 +429,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             )
             log_gpu_memory_usage("After building sharding manager", logger=logger)
         else:
-            raise NotImplementedError("Only vllmRollout is supported with Megatron now")
+            raise NotImplementedError(f"Unsupported rollout name: {self.config.rollout.name}. Please use vllm or sglang rollout.")
         print(f"rollout and sharding manager init done sharding_manager: {sharding_manager}")
         return rollout, sharding_manager
 
@@ -523,21 +510,21 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
-            self.checkpoint_mananager = MegatronCheckpointManager(
-                config=self.config,
-                model_config=self.actor_model_config,
-                role="actor",
+            self.checkpoint_manager = NNScalerCheckpointManager(
                 model=self.actor_module,
-                arch=self.architectures[0],
-                hf_config=self.hf_config,
-                param_dtype=self.param_dtype,
-                share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
-                processing_class=self.processor if self.processor is not None else self.tokenizer,
                 optimizer=self.actor_optimizer,
-                optimizer_scheduler=self.actor_optimizer_scheduler,
-                use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,
-                use_checkpoint_opt_param_scheduler=self.config.actor.optim.use_checkpoint_opt_param_scheduler,
+                lr_scheduler=self.actor_optimizer_scheduler,
+                processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_contents=self.config.actor.checkpoint,
+                # TODO(yizhu1): check following parameters
+                # role="actor",
+                # config=self.config,
+                # model_config=self.actor_model_config,
+                # hf_config=self.hf_config,
+                # param_dtype=self.param_dtype,
+                # share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
+                # use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,
+                # use_checkpoint_opt_param_scheduler=self.config.actor.optim.use_checkpoint_opt_param_scheduler,
             )
         get_torch_device().empty_cache()
         log_gpu_memory_usage("After init_model finish", logger=logger)
@@ -667,7 +654,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     def load_checkpoint(self, checkpoint_path, hdfs_path=None, del_local_after_load=True):
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.actor_module)
-        self.checkpoint_mananager.load_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
+        self.checkpoint_manager.load_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
         if self._is_offload_optimizer:
@@ -681,7 +668,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     def save_checkpoint(self, checkpoint_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.actor_module)
-        self.checkpoint_mananager.save_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, global_step=global_step, max_ckpt_to_keep=max_ckpt_to_keep)
+        self.checkpoint_manager.save_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, global_step=global_step, max_ckpt_to_keep=max_ckpt_to_keep)
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
@@ -858,7 +845,7 @@ class CriticWorker(NNScalerWorker, DistProfilerExtension):
             critic_optimizer_config=critic_optimizer_config,
         )
         self.flops_counter = FlopsCounter(self.critic_model_config)
-        self.checkpoint_mananager = MegatronCheckpointManager(
+        self.checkpoint_manager = NNScalerCheckpointManager(
             config=self.config,
             model_config=self.critic_model_config,
             role="critic",
@@ -927,7 +914,7 @@ class CriticWorker(NNScalerWorker, DistProfilerExtension):
     def load_checkpoint(self, checkpoint_path, hdfs_path=None, del_local_after_load=True):
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.critic_module)
-        self.checkpoint_mananager.load_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
+        self.checkpoint_manager.load_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.critic_module)
         if self._is_offload_optimizer:
@@ -937,7 +924,7 @@ class CriticWorker(NNScalerWorker, DistProfilerExtension):
     def save_checkpoint(self, checkpoint_path, hdfs_path=None, global_steps=0, max_ckpt_to_keep=None):
         if self._is_offload_param:
             load_megatron_model_to_gpu(self.critic_module)
-        self.checkpoint_mananager.save_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, global_step=global_steps, max_ckpt_to_keep=max_ckpt_to_keep)
+        self.checkpoint_manager.save_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, global_step=global_steps, max_ckpt_to_keep=max_ckpt_to_keep)
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.critic_module)
 
