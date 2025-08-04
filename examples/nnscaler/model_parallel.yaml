@@ -1,0 +1,26 @@
+- allowed_partition_dims:
+  - 1,0
+  - 1,1
+  name: torch.nn.functional.linear
+  parent_module: ''
+  replica_allowed: false
+
+- allowed_partition_dims:
+  - 0,2
+  name: nnscaler.graph.parser.external.tf_ring.flash_attention_forward_ring
+  parent_module: ''
+  replica_allowed: false
+
+- allowed_partition_dims:
+  - 1,1
+  name: nnscaler.runtime.function.embedding
+  parent_module: ''
+  replica_allowed: false
+
+# do not allow partitioning the weight of RMSNorm
+- allowed_partition_dims:
+  - 1,0
+  - 1,1
+  name: torch.mul
+  parent_module: 'Qwen2RMSNorm'
+  replica_allowed: false

@@ -249,6 +249,11 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # recompute the model by layer, and force to partition the attention by sequence
         # length dimension. To make the sharding easier, model weights are not partitioned
         # currently.
+        if self._is_actor:
+            pc_path = "./examples/nnscaler/seq_parallel.yaml"
+        else:
+            # to save the memory, we will force to partition the model weights for reference model
+            pc_path = "./examples/nnscaler/model_parallel.yaml"
         compute_config = ComputeConfig(
             plan_ngpus=4,
             runtime_ngpus=4,
@@ -256,7 +261,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             use_zero=1,
             inference_only=self._is_ref,
             pas_config={
-                "partition_constraints_path": "./examples/nnscaler/seq_parallel.yaml",
+                "partition_constraints_path": pc_path,
                 # Note: recompute_modules will not take effect for the reference model, since
                 # reference model is only used for log probability computation and does not
                 # require backward pass.

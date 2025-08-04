@@ -187,8 +187,9 @@ def collect_megatron_compute(worker_group, output):
     Only collect the data from the tp=0 and pp=last and every dp ranks
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
     output_in_dp = []
     pp_size = worker_group.get_megatron_global_info().pp_size
     for global_rank in range(worker_group.world_size):
@@ -203,8 +204,9 @@ def dispatch_megatron_compute_data_proto(worker_group, *args, **kwargs):
     All the args and kwargs must be DataProto. The batch will be chunked by dp_size and passed to each rank
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
 
     splitted_args, splitted_kwargs = _split_args_kwargs_data_proto(worker_group.dp_size, *args, **kwargs)
     return dispatch_megatron_compute(worker_group, *splitted_args, **splitted_kwargs)
