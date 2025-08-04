@@ -26,7 +26,7 @@ import torch
 import torch.distributed
 from codetiming import Timer
 # from megatron.core import parallel_state as mpu
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from verl import DataProto
 from verl.single_controller.base.decorator import Dispatch, register
@@ -254,6 +254,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         else:
             # to save the memory, we will force to partition the model weights for reference model
             pc_path = "./examples/nnscaler/model_parallel.yaml"
+        print(f'nnScaler parallelize model for {self.role}, pc_path: {pc_path}')
         compute_config = ComputeConfig(
             plan_ngpus=4,
             runtime_ngpus=4,
@@ -488,6 +489,9 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
         if self._is_actor:
+            OmegaConf.set_struct(self.config.actor, True)
+            with open_dict(self.config.actor):
+                self.config.actor.use_remove_padding = self.config.model.use_remove_padding
             self.actor = NNScalerPPOActor(
                 config=self.config.actor,
                 model_config=self.actor_model_config,

@@ -138,7 +138,9 @@ class NNScalerPPOActor(BasePPOActor):
         # config = get_model_config(self.actor_module[0])
         # print(config)
         # config.finalize_model_grads_func = finalize_model_grads
+        # TODO(yizhu1): fix it
         self.static_length = 4096
+        self.use_remove_padding = self.config.get("use_remove_padding", False)
 
     def _validate_config(self, config) -> None:
         """Validate config options not implemented for nnScaler backend"""

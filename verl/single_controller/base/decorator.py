@@ -147,13 +147,30 @@ def collect_all_to_all(worker_group, output):
     return output
 
 
+def get_rank_info(worker_group, rank):
+    """
+    Get the rank info for a specific rank in the worker group.
+    """
+    from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
+
+    assert 0 <= rank < worker_group.world_size, f"rank must be from [0, world_size), Got {rank}"
+    if isinstance(worker_group, MegatronWorkerGroup):
+        return worker_group.get_megatron_rank_info(rank)
+    elif isinstance(worker_group, NNScalerWorkerGroup):
+        return worker_group.get_nnscaler_rank_info(rank)
+    else:
+        raise TypeError(f"worker_group must be MegatronWorkerGroup or NNScalerWorkerGroup, Got {type(worker_group)}")
+
+
 def dispatch_megatron_compute(worker_group, *args, **kwargs):
     """
     User passes in dp data. The data is dispatched to all tp/pp ranks with the same dp
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup), f"worker_group must be MegatronWorkerGroup, Got {type(worker_group)}"
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup)), f"worker_group must be MegatronWorkerGroup, Got {type(worker_group)}"
 
     # ray put all the args in advance to avoid duplicate serialization cost
     import ray
@@ -166,7 +183,7 @@ def dispatch_megatron_compute(worker_group, *args, **kwargs):
         assert isinstance(arg, (Tuple, List)) and len(arg) == worker_group.dp_size
         transformed_args = []
         for i in range(worker_group.world_size):
-            local_dp_rank = worker_group.get_megatron_rank_info(rank=i).dp_rank
+            local_dp_rank = get_rank_info(worker_group, rank=i).dp_rank
             transformed_args.append(arg[local_dp_rank])
         all_args.append(transformed_args)
     all_args = tuple(all_args)
@@ -176,7 +193,7 @@ def dispatch_megatron_compute(worker_group, *args, **kwargs):
         assert isinstance(v, (Tuple, List)) and len(v) == worker_group.dp_size
         transformed_v = []
         for i in range(worker_group.world_size):
-            local_dp_rank = worker_group.get_megatron_rank_info(rank=i).dp_rank
+            local_dp_rank = get_rank_info(worker_group, rank=i).dp_rank
             transformed_v.append(v[local_dp_rank])
         all_kwargs[k] = transformed_v
     return all_args, all_kwargs
@@ -193,7 +210,7 @@ def collect_megatron_compute(worker_group, output):
     output_in_dp = []
     pp_size = worker_group.get_megatron_global_info().pp_size
     for global_rank in range(worker_group.world_size):
-        local_rank_info = worker_group.get_megatron_rank_info(rank=global_rank)
+        local_rank_info = get_rank_info(worker_group, rank=global_rank)
         if local_rank_info.tp_rank == 0 and local_rank_info.pp_rank == pp_size - 1 and local_rank_info.cp_rank == 0:
             output_in_dp.append(output[global_rank])
     return output_in_dp
@@ -251,8 +268,9 @@ def dispatch_megatron_pp_as_dp(worker_group, *args, **kwargs):
     treat pp as dp.
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
 
     pp_size = worker_group.pp_size
     dp_size = worker_group.dp_size
@@ -304,8 +322,9 @@ def collect_megatron_pp_as_dp(worker_group, output):
     treat pp as dp. Only collect data on tp=0
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
     output_in_dp = []
     for global_rank in range(worker_group.world_size):
         local_rank_info = worker_group.get_megatron_rank_info(rank=global_rank)
@@ -319,8 +338,9 @@ def collect_megatron_pp_only(worker_group, output):
     Only collect output of megatron pp. This is useful when examine weight names as they are identical in tp/dp
     """
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
     output_in_pp = []
     for global_rank in range(worker_group.world_size):
         local_rank_info = worker_group.get_megatron_rank_info(rank=global_rank)
@@ -331,8 +351,9 @@ def collect_megatron_pp_only(worker_group, output):
 
 def dispatch_megatron_pp_as_dp_data_proto(worker_group, *args, **kwargs):
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (NNScalerWorkerGroup, MegatronWorkerGroup))
 
     pp_dp_cp_size = worker_group.dp_size * worker_group.pp_size * worker_group.cp_size
     splitted_args, splitted_kwargs = _split_args_kwargs_data_proto(pp_dp_cp_size, *args, **kwargs)
@@ -342,8 +363,9 @@ def dispatch_megatron_pp_as_dp_data_proto(worker_group, *args, **kwargs):
 
 def collect_megatron_pp_as_dp_data_proto(worker_group, output):
     from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
 
-    assert isinstance(worker_group, MegatronWorkerGroup)
+    assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
 
     output = collect_megatron_pp_as_dp(worker_group, output)
     return _concat_data_proto_or_future(output)
