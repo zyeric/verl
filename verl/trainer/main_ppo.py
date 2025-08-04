@@ -194,7 +194,6 @@ class TaskRunner:
         )
         # Initialize the workers of the trainer.
         trainer.init_workers()
-        assert False, "TODO: check fit logic"
         # Start the training process.
         trainer.fit()
 

@@ -2,6 +2,12 @@ from typing import Optional, Tuple
 
 import torch
 
+try:
+    from apex.normalization.fused_layer_norm import fused_rms_norm_affine
+    has_apex = True
+except ImportError:
+    has_apex = False
+
 
 def qwen2_attn_forward(
     self,
@@ -57,6 +63,19 @@ def qwen2_attn_forward(
     return attn_output, None
 
 
+def rmsnorm_fwd(self, hidden_states):
+    if has_apex:
+        return fused_rms_norm_affine(hidden_states, self.weight, self.weight.shape, self.variance_epsilon)
+    else:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+
 def hf_patch():
-    from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
+    from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2RMSNorm
     Qwen2Attention.forward = qwen2_attn_forward
+    # TODO(yizhu1): disable for now seems apex in this docker has some issues
+    # Qwen2RMSNorm.forward = rmsnorm_fwd

@@ -171,11 +171,19 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
             else:
                 nnscaler_params = self.module.state_dict()
                 full_map = self.module.fullmap
-                print('nnScaler sharding manager, params keys:', list(nnscaler_params.keys()))
+                # print('nnScaler sharding manager, params keys:', list(nnscaler_params.keys()))
                 params = OrderedDict()
                 for name, param in nnscaler_params.items():
+                    if name not in full_map:
+                        print(f"Warning: {name} not in full_map, skip it")
+                        continue
                     attr_meta = full_map[name]
-                    params[attr_meta.orig_name] = param
+                    # since the model is wrapped during tracing, we need to remove the prefix
+                    # `model.` at the beginning of the name
+                    if attr_meta.orig_name.startswith("model.model."):
+                        orig_name = attr_meta.orig_name[len("model.") :]
+                    params[orig_name] = param
+                print("nnScaler sharding manager, params after fullmap:", list(params.keys()))
 
             log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
 

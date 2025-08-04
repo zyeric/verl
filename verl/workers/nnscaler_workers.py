@@ -171,6 +171,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
 
         from nnscaler import parallelize, ComputeConfig, build_optimizer
+        from nnscaler.cli.mixed_module import mixin_module
         from nnscaler.policies import pas_autodist
 
         hf_patch()
@@ -233,6 +234,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         else:
             raise ValueError(f"Unsupported role: {self.role}")
 
+        # since we sequences are packed when updating the policy, the batch size is fixed to 1
         bsz = 1
         seq_len = 4096
         dummy_input = {
@@ -240,6 +242,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             # TODO(yizhu1): seems attention_mask should be None for packing
             "attention_mask": torch.ones((bsz, seq_len), dtype=torch.int64),
             "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
+            "use_cache": False,
         }
         # TODO(yizhu1):
         # Since we are focusing on the long context training scenario, we will force to
@@ -298,6 +301,11 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 "eps": 1e-8,
             }
             actor_optimizer = build_optimizer(actor_module, torch.optim.AdamW, compute_config, **optim_kwargs)
+            actor_module = mixin_module(actor_module, actor_optimizer)
+            scaling_factor = compute_config.runtime_ngpus // compute_config.plan_ngpus
+            def reducer_pre_hook(reducer, grad):
+                grad.div_(scaling_factor)
+            actor_optimizer.register_reducer_pre_hook(reducer_pre_hook)
 
             total_steps = optim_config.get("total_training_steps", 0)
             num_warmup_steps = int(optim_config.get("lr_warmup_steps", -1))
@@ -311,6 +319,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             if self.rank == 0:
                 print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
 
+            # TODO(yizhu1): check LR scheduler
             if warmup_style == "constant":
                 actor_optimizer_scheduler = get_constant_schedule_with_warmup(optimizer=actor_optimizer, num_warmup_steps=num_warmup_steps)
             elif warmup_style == "cosine":
