@@ -139,8 +139,7 @@ class NNScalerPPOActor(BasePPOActor):
         # config = get_model_config(self.actor_module[0])
         # print(config)
         # config.finalize_model_grads_func = finalize_model_grads
-        # TODO(yizhu1): fix it
-        self.static_length = 4096
+        self.static_length = self.config.nnscaler.static_seq_len
         self.use_remove_padding = self.config.get("use_remove_padding", False)
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
 
@@ -230,6 +229,7 @@ class NNScalerPPOActor(BasePPOActor):
                 raise NotImplementedError("multi-modal inputs are not supported in nnScaler PPO Actor yet.")
 
             pad_size = self.static_length - input_ids_rmpad.shape[1]
+            assert pad_size >= 0, f"input_ids_rmpad shape {input_ids_rmpad.shape} is larger than static_length {self.static_length}"
             input_ids_rmpad = torch.nn.functional.pad(input_ids_rmpad, (0, pad_size), value=0)
             pad_pos_ids = torch.arange(pad_size, device=position_ids_rmpad.device).unsqueeze(0)
             position_ids_rmpad = torch.cat([position_ids_rmpad, pad_pos_ids], dim=-1)
@@ -397,7 +397,7 @@ class NNScalerPPOActor(BasePPOActor):
                     micro_batches_dp = data.chunk(num_micro_batches)
                     return micro_batches_dp, None
             elif use_dynamic_bsz:
-                max_token_len = data.meta_info["max_token_len"]
+                max_token_len = self.static_length
                 micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
                 return micro_batches, indices
             else:
@@ -480,7 +480,7 @@ class NNScalerPPOActor(BasePPOActor):
                         num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
                         micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
-                    max_token_len = self.config.ppo_max_token_len_per_gpu
+                    max_token_len = self.static_length
                     micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
                 else:
                     self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu

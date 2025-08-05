@@ -183,7 +183,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
                     if attr_meta.orig_name.startswith("model.model."):
                         orig_name = attr_meta.orig_name[len("model.") :]
                     params[orig_name] = param
-                print("nnScaler sharding manager, params after fullmap:", list(params.keys()))
+                # print("nnScaler sharding manager, params after fullmap:", list(params.keys()))
 
             log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
 

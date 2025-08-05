@@ -278,7 +278,8 @@ def rearrange_micro_batches(batch, max_token_len, dp_group=None, num_batches_div
     seq_len_effective = seq_len_effective.tolist()
     assert num_micro_batches <= len(seq_len_effective)
 
-    micro_bsz_idx = get_seqlen_balanced_partitions(seq_len_effective, num_micro_batches, equal_size=False)
+    # TODO(yizhu1): heuristically add one to num_micro_batches to make sure that seq_len in each batch is less than max_token_len.
+    micro_bsz_idx = get_seqlen_balanced_partitions(seq_len_effective, num_micro_batches + 1, equal_size=False)
 
     micro_batches = []
 

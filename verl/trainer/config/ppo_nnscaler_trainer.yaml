@@ -111,6 +111,8 @@ actor_rollout_ref:
       weight_decay: 0.01
 
     nnscaler:
+      # currently nnscaler needs a static sequence length
+      static_seq_len: 1024
       param_offload: False
       grad_offload: False
       optimizer_offload: False
@@ -156,6 +158,7 @@ actor_rollout_ref:
     # recompute entropy
     entropy_checkpointing: ${actor_rollout_ref.actor.entropy_checkpointing}
     nnscaler:
+      static_seq_len: ${actor_rollout_ref.actor.nnscaler.static_seq_len}
       param_offload: False
       tensor_model_parallel_size: 1
       expert_model_parallel_size: 1

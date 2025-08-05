@@ -238,7 +238,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         # since we sequences are packed when updating the policy, the batch size is fixed to 1
         bsz = 1
-        seq_len = 4096
+        seq_len = nnscaler_config.static_seq_len
+        print(f"nnScaler static sequence length: {nnscaler_config.static_seq_len}")
         dummy_input = {
             "input_ids": torch.randint(0, 1000, (bsz, seq_len), dtype=torch.int64),
             # TODO(yizhu1): seems attention_mask should be None for packing
