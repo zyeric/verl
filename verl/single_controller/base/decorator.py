@@ -163,6 +163,21 @@ def get_rank_info(worker_group, rank):
         raise TypeError(f"worker_group must be MegatronWorkerGroup or NNScalerWorkerGroup, Got {type(worker_group)}")
 
 
+def get_global_info(worker_group):
+    """
+    Get the global info for the worker group.
+    """
+    from verl.single_controller.base.megatron.worker_group import MegatronWorkerGroup
+    from verl.single_controller.base.nnscaler.worker_group import NNScalerWorkerGroup
+
+    if isinstance(worker_group, MegatronWorkerGroup):
+        return worker_group.get_megatron_global_info()
+    elif isinstance(worker_group, NNScalerWorkerGroup):
+        return worker_group.get_nnscaler_global_info()
+    else:
+        raise TypeError(f"worker_group must be MegatronWorkerGroup or NNScalerWorkerGroup, Got {type(worker_group)}")
+
+
 def dispatch_megatron_compute(worker_group, *args, **kwargs):
     """
     User passes in dp data. The data is dispatched to all tp/pp ranks with the same dp
@@ -208,9 +223,10 @@ def collect_megatron_compute(worker_group, output):
 
     assert isinstance(worker_group, (MegatronWorkerGroup, NNScalerWorkerGroup))
     output_in_dp = []
-    pp_size = worker_group.get_megatron_global_info().pp_size
+    pp_size = get_global_info(worker_group).pp_size
     for global_rank in range(worker_group.world_size):
         local_rank_info = get_rank_info(worker_group, rank=global_rank)
+        print('DEBUG', global_rank, local_rank_info.tp_rank, local_rank_info.pp_rank, local_rank_info.cp_rank)
         if local_rank_info.tp_rank == 0 and local_rank_info.pp_rank == pp_size - 1 and local_rank_info.cp_rank == 0:
             output_in_dp.append(output[global_rank])
     return output_in_dp

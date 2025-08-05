@@ -66,6 +66,16 @@ actor_rollout_ref:
     ppo_epochs: 1
     data_loader_seed: null
     shuffle: False
+
+    # calculate entropy with chunking to reduce memory peak
+    entropy_from_logits_with_chunking: False
+
+    # recompute entropy
+    entropy_checkpointing: False
+
+    # Gradient clipping for actor updates
+    grad_clip: 1.0
+
     policy_loss:   # policy loss config
       loss_mode: "vanilla" # Loss function mode: vanilla / clip-cov / kl-cov from https://arxiv.org/abs/2505.22617
       clip_cov_ratio: 0.0002 # Ratio of tokens to be clipped for clip-cov loss
@@ -139,6 +149,12 @@ actor_rollout_ref:
   ref:
     strategy: ${actor_rollout_ref.actor.strategy}
     use_torch_compile: ${actor_rollout_ref.actor.use_torch_compile}
+
+    # calculate entropy with chunking to reduce memory peak
+    entropy_from_logits_with_chunking: ${actor_rollout_ref.actor.entropy_from_logits_with_chunking}
+
+    # recompute entropy
+    entropy_checkpointing: ${actor_rollout_ref.actor.entropy_checkpointing}
     nnscaler:
       param_offload: False
       tensor_model_parallel_size: 1

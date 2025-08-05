@@ -174,6 +174,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         from nnscaler.cli.mixed_module import mixin_module
         from nnscaler.policies import pas_autodist
 
+        log_gpu_memory_usage(f"Before building {self.role}", logger=None)
+
         hf_patch()
 
         nnscaler_config = self.config.actor.nnscaler
@@ -277,6 +279,9 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             compute_config=compute_config,
             instance_name=instance_name,
         )
+        p_module = p_module.to(device=get_device_id())
+
+        log_gpu_memory_usage(f"After building {self.role}", logger=None)
 
         # Step 3: initialize the megatron model
         if self._is_actor and self._is_rollout:
@@ -508,6 +513,9 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             log_gpu_memory_usage("After rollout init", logger=logger)
 
         if self._is_ref:
+            OmegaConf.set_struct(self.config.ref, True)
+            with open_dict(self.config.ref):
+                self.config.ref.use_remove_padding = self.config.model.use_remove_padding
             self.ref_module, self.ref_model_config = self._build_model_optimizer(
                 model_path=self.config.model.path,
                 optim_config=None,
@@ -562,16 +570,15 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         micro_batch_size = self.config.actor.ppo_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
-        dataloader = self.actor.make_minibatch_iterator(data=data)
         with Timer(name="update_policy", logger=None) as timer:
-            metrics = self.actor.update_policy(dataloader=dataloader)
+            metrics = self.actor.update_policy(data=data)
         delta_time = timer.last
         global_num_tokens = data.meta_info["global_token_num"]
         estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
         metrics["perf/mfu/actor"] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
-        from verl.utils.megatron.optimizer import get_megatron_last_lr
 
-        metrics["actor/lr"] = get_megatron_last_lr(self.actor_optimizer)
+        lr = self.actor_optimizer_scheduler.get_last_lr()[0]
+        metrics["actor/lr"] = lr
         self.actor_optimizer_scheduler.step(1)
 
         # TODO: here, we should return all metrics

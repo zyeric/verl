@@ -21,14 +21,14 @@ class NNScalerWorker(Worker):
 
     def get_nnscaler_global_info(self):
         # TODO(yizhu1): refine implementation here
-        info = DistGlobalInfo(tp_size=1, dp_size=1, pp_size=1, cp_size=4)
+        info = DistGlobalInfo(tp_size=4, dp_size=1, pp_size=1, cp_size=1)
         return info
 
     def get_nnscaler_rank_info(self):
         # TODO(yizhu1): refine implementation here
         import torch
         rank = torch.distributed.get_rank()
-        info = DistRankInfo(tp_rank=1, dp_rank=0, pp_rank=1, cp_rank=rank)
+        info = DistRankInfo(tp_rank=rank, dp_rank=0, pp_rank=0, cp_rank=0)
         return info
 
     def _init_hf_config_and_tf_config(

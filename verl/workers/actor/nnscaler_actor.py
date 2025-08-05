@@ -37,6 +37,7 @@ import torch.distributed
 from omegaconf import OmegaConf
 from torch import nn
 
+import verl.utils.torch_functional as verl_F
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, compute_policy_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.debug import GPUMemoryLogger
@@ -47,7 +48,7 @@ from verl.utils.device import get_device_id, get_device_name, is_cuda_available
 # from verl.utils.megatron_utils import get_model_config
 from verl.utils.py_functional import append_to_dict
 from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
-from verl.utils.torch_functional import broadcast_dict_tensor
+from verl.utils.torch_functional import logprobs_from_logits
 from verl.workers.actor import BasePPOActor
 from verl.utils.ulysses import _unpad_tensor
 
@@ -141,6 +142,18 @@ class NNScalerPPOActor(BasePPOActor):
         # TODO(yizhu1): fix it
         self.static_length = 4096
         self.use_remove_padding = self.config.get("use_remove_padding", False)
+        self.use_fused_kernels = self.config.get("use_fused_kernels", False)
+
+        if self.config.entropy_from_logits_with_chunking:
+            entropy_from_logits = verl_F.entropy_from_logits_with_chunking
+        else:
+            entropy_from_logits = verl_F.entropy_from_logits
+
+        self.compute_entropy_from_logits = (
+            torch.compile(entropy_from_logits, dynamic=True)
+            if self.config.get("use_torch_compile", True)  #  use torch compile by default
+            else entropy_from_logits
+        )
 
     def _validate_config(self, config) -> None:
         """Validate config options not implemented for nnScaler backend"""
@@ -234,7 +247,7 @@ class NNScalerPPOActor(BasePPOActor):
                 input_ids=input_ids_rmpad,
                 attention_mask=None,
                 position_ids=position_ids_rmpad,
-                use_cache=False,
+                # use_cache=False,
                 **extra_args,
             )  # prevent model thinks we are generating
 
@@ -243,7 +256,7 @@ class NNScalerPPOActor(BasePPOActor):
                 entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
 
             else:
-                logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
+                logits_rmpad = output.squeeze(0)  # (total_nnz, vocab_size)
                 logits_rmpad.div_(temperature)
 
                 # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
@@ -264,9 +277,9 @@ class NNScalerPPOActor(BasePPOActor):
                         entropy_rmpad = torch.utils.checkpoint.checkpoint(self.compute_entropy_from_logits, logits_rmpad)
 
             # gather and unpad for the ulysses sp
-            log_probs = _unpad_tensor(log_probs, unpad_dim=0, padding_size=pad_size)
+            log_probs = _unpad_tensor(log_probs, dim=0, padding_size=pad_size)
             if calculate_entropy:
-                entropy_rmpad = _unpad_tensor(entropy_rmpad, unpad_dim=0, padding_size=pad_size)
+                entropy_rmpad = _unpad_tensor(entropy_rmpad, dim=0, padding_size=pad_size)
             # pad back to (bsz, seqlen)
             if calculate_entropy:
                 full_entropy = pad_input(
@@ -367,7 +380,7 @@ class NNScalerPPOActor(BasePPOActor):
             if has_multi_modal_inputs:
                 all_multi_modal_inputs_list = data.non_tensor_batch["multi_modal_inputs"]
                 if use_dynamic_bsz:
-                    max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
+                    max_token_len = data.meta_info["max_token_len"]
                     rearranged_text_micro_batches, textual_indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
 
                     final_micro_batches_list = []
@@ -384,7 +397,7 @@ class NNScalerPPOActor(BasePPOActor):
                     micro_batches_dp = data.chunk(num_micro_batches)
                     return micro_batches_dp, None
             elif use_dynamic_bsz:
-                max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
+                max_token_len = data.meta_info["max_token_len"]
                 micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
                 return micro_batches, indices
             else:
@@ -454,7 +467,7 @@ class NNScalerPPOActor(BasePPOActor):
                         all_multi_modal_inputs_list = data.non_tensor_batch["multi_modal_inputs"]
                         batch_tensordict_for_rearrange = data.batch
 
-                        max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                        max_token_len = self.config.ppo_max_token_len_per_gpu
                         rearranged_text_micro_batches_tds, textual_indices = rearrange_micro_batches(batch=batch_tensordict_for_rearrange, max_token_len=max_token_len)
 
                         for current_original_indices, text_mb_td in zip(textual_indices, rearranged_text_micro_batches_tds):
@@ -467,7 +480,7 @@ class NNScalerPPOActor(BasePPOActor):
                         num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
                         micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
-                    max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                    max_token_len = self.config.ppo_max_token_len_per_gpu
                     micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
                 else:
                     self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
