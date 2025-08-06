@@ -3,17 +3,19 @@ set -x
 # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
 # export VLLM_ATTENTION_BACKEND=XFORMERS
 
+HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
+
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=/workspace/data/gsm8k/train.parquet \
-    data.val_files=/workspace/data/gsm8k/test.parquet \
+    data.train_files=../gsm8k/train.parquet \
+    data.val_files=../gsm8k/test.parquet \
     data.train_batch_size=1024 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.shuffle=False \
-    actor_rollout_ref.model.path=../Qwen2.5-3B-Instruct \
+    actor_rollout_ref.model.path=$HF_MODEL_PATH \
     actor_rollout_ref.model.use_shm=True \
     actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -38,8 +40,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console'] \
-    trainer.project_name='verl_grpo_example_gsm8k' \
-    trainer.experiment_name='qwen2.5_3b_grpo_lora' \
+    trainer.project_name='verl_nnscaler' \
+    trainer.experiment_name='qwen2.5_1.5b_grpo_fsdp' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

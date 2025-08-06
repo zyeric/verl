@@ -135,11 +135,8 @@ class NNScalerPPOActor(BasePPOActor):
             }
         )
 
-        # TODO(yizhu1): seems we don't need it in nnScaler ?
-        # config = get_model_config(self.actor_module[0])
-        # print(config)
-        # config.finalize_model_grads_func = finalize_model_grads
         self.static_length = self.config.nnscaler.static_seq_len
+        self.nnscaler_max_token_len = self.static_length // 8 * 7
         self.use_remove_padding = self.config.get("use_remove_padding", False)
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
 
@@ -397,7 +394,7 @@ class NNScalerPPOActor(BasePPOActor):
                     micro_batches_dp = data.chunk(num_micro_batches)
                     return micro_batches_dp, None
             elif use_dynamic_bsz:
-                max_token_len = self.static_length
+                max_token_len = self.nnscaler_max_token_len
                 micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
                 return micro_batches, indices
             else:
@@ -480,7 +477,7 @@ class NNScalerPPOActor(BasePPOActor):
                         num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
                         micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
-                    max_token_len = self.static_length
+                    max_token_len = self.nnscaler_max_token_len
                     micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
                 else:
                     self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu

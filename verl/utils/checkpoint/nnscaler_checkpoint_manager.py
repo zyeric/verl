@@ -16,6 +16,7 @@ import logging
 import os
 import warnings
 from typing import Optional, Union
+from pathlib import Path
 
 import torch
 import torch.distributed
@@ -30,6 +31,8 @@ from verl.utils.fs import copy_to_local, is_non_local
 from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
 from verl.utils.logger import log_with_rank
 
+from nnscaler.runtime.module import ParallelModule
+
 from .checkpoint_manager import BaseCheckpointManager
 
 # Setup logging
@@ -39,14 +42,14 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 class NNScalerCheckpointManager(BaseCheckpointManager):
     """
-    Manage FSDP checkpointing in SPMD training.
+    Manage nnScaler ParallelModule checkpointing in training.
 
     - Saves/loads per-rank sharded model & optimizer states
     - Persists full lr_scheduler and RNG state
     - Stores HF tokenizer/processor and model/config for unified restore
 
     Args:
-        model (FSDP): Wrapped model instance.
+        model (torch.nn.Module): Wrapped model instance.
         optimizer (Optimizer): Training optimizer.
         lr_scheduler (LRScheduler): Learning-rate scheduler.
         processing_class (PreTrainedTokenizer or ProcessorMixin, optional):
@@ -58,11 +61,14 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
 
     def __init__(
         self,
-        model: FSDP,
+        model: ParallelModule,
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
         processing_class: Union[PreTrainedTokenizer, ProcessorMixin] = None,
         checkpoint_contents: DictConfig = None,
+        with_merged: bool = False,
+        load_type: str = "deduped",
+        save_type: str = "deduped",
         **kwargs,
     ):
         if processing_class is None:
@@ -77,6 +83,13 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
             processing_class=processing_class,
             checkpoint_contents=checkpoint_contents,
         )
+
+        assert self.should_load_model, "current implementation assumes model should be loaded"
+
+        # TODO(yizhu1): implement with_merged logic
+        self.with_merged = with_merged
+        self.load_type = load_type
+        self.save_type = save_type
 
     def load_checkpoint(self, local_path: str, hdfs_path: str = None, del_local_after_load=False):
         """
@@ -100,23 +113,41 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
         if self.should_load_optimizer:
             assert self.optimizer is not None, "optimizer must be provided when checkpoint_contents.load includes ['optimizer']"
 
-        # every rank download its own checkpoint
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False) if self.should_load_model else None
-        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False) if self.should_load_optimizer else None
-        with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
-            if self.should_load_model:
-                remote_model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
-                local_model_path = copy_to_local(remote_model_path)
-                model_state_dict = torch.load(local_model_path, weights_only=False)
-                self.model.load_state_dict(model_state_dict)
-                log_with_rank(f"Loaded model from {remote_model_path}", rank=self.rank, logger=logger)
+        resume_from = Path(local_path)
 
-            if self.should_load_optimizer:
-                remote_optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
-                local_optim_path = copy_to_local(remote_optim_path)
-                optimizer_state_dict = torch.load(local_optim_path, weights_only=False)
-                self.optimizer.load_state_dict(optimizer_state_dict)
-                log_with_rank(f"Loaded optimizer from {remote_optim_path}", rank=self.rank, logger=logger)
+        # copy from nnscaler/cli/trainer.py
+        if resume_from.is_file():
+            resume_from = resume_from   # when we load from merged checkpoint
+            state_dict = torch.load(resume_from, map_location='cpu', weights_only=False)
+        else:
+            ckpt_files = list(resume_from.glob('*.ckpt'))
+            rank_ckpt_files = {int(f.stem): f for f in ckpt_files if f.stem.isdigit()}
+            if set(rank_ckpt_files.keys()) != set(range(len(rank_ckpt_files))):
+                raise ValueError(f"Checkpoint files in {resume_from} are not complete: {rank_ckpt_files.keys()}")
+
+            resume_from = resume_from / f'{self.rank}.ckpt'
+            state_dict = torch.load(resume_from, map_location='cpu', weights_only=False)
+
+        model = self.model if self.should_load_model else None
+        optimizer = self.optimizer if self.should_load_optimizer else None
+
+        if self.load_type == 'merged': # it is a merged state dict
+            nnscaler.load_merged_state_dict(
+                model, state_dict['model'],
+                optimizer, state_dict['optimizer'],
+                )
+        elif self.load_type == 'sharded':
+            nnscaler.load_sharded_state_dict(
+                model, state_dict['model'],
+                optimizer, state_dict['optimizer'],
+            )
+        elif self.load_type == 'deduped':
+            nnscaler.load_deduped_state_dict(
+                model, state_dict['model'],
+                optimizer, state_dict['optimizer'],
+            )
+        else:
+            raise ValueError(f"Unknown checkpoint type: {self.load_type}")
 
         if self.should_load_extra:
             remote_extra_state_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
@@ -133,20 +164,12 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
                 self.lr_scheduler.load_state_dict(lr_scheduler_state_dict)
                 log_with_rank(f"Loaded lr_scheduler from {remote_extra_state_path}", rank=self.rank, logger=logger)
 
-        if self.rank == 0 and del_local_after_load:
-            try:
-                os.remove(local_model_path) if is_non_local(local_model_path) else None
-                os.remove(local_optim_path) if is_non_local(local_optim_path) else None
-                os.remove(local_extra_state_path) if is_non_local(local_extra_state_path) else None
-            except Exception as e:
-                log_with_rank(f"remove local resume ckpt file after loading failed, exception {e} will be ignored", rank=self.rank, logger=logger)
-
         # wait for everyone to load checkpoints
         torch.distributed.barrier()
 
     def save_checkpoint(self, local_path: str, hdfs_path: str = None, global_step: int = 0, max_ckpt_to_keep=None):
         """
-        Save an FSDP checkpoint for this rank.
+        Save an ParallelModule checkpoint for this rank.
 
         Writes:
           - model & optimizer shard files
@@ -184,33 +207,40 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
             assert self.optimizer is not None, "optimizer must be provided when checkpoint_contents.save includes ['optimizer']"
 
         # every rank will save its own model and optim shard
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
-                model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
-                optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
-                extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
+            model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
+            optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
+            extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
 
-                if self.should_save_model:
-                    model_state_dict = self.model.state_dict()
-                    torch.save(model_state_dict, model_path)
-                    log_with_rank(f"Saved model to {os.path.abspath(model_path)}", rank=self.rank, logger=logger)
+            if self.save_type == 'sharded':
+                model_state_dict= self.model.state_dict()
+                optimizer_state_dict = self.optimizer.state_dict()
+            elif self.save_type == 'deduped':
+                model_state_dict, optimizer_state_dict = nnscaler.deduped_state_dict(
+                    self.model, self.optimizer
+                )
+            elif self.save_type == 'merged':
+                raise ValueError("merged checkpoint is not supported for saving")
+            else:
+                raise ValueError(f"Unknown checkpoint type: {self.save_type}")
 
-                if self.should_save_optimizer:
-                    optimizer_state_dict = self.optimizer.state_dict()
-                    torch.save(optimizer_state_dict, optim_path)
-                    log_with_rank(f"Saved optim to {os.path.abspath(optim_path)}", rank=self.rank, logger=logger)
+            if self.should_save_model:
+                torch.save(model_state_dict, model_path)
+                log_with_rank(f"Saved model to {os.path.abspath(model_path)}", rank=self.rank, logger=logger)
 
-                if self.should_save_extra:
-                    lr_scheduler_state_dict = self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
-                    extra_state_dict = {
-                        "lr_scheduler": lr_scheduler_state_dict,
-                        "rng": self.get_rng_state(),
-                    }
-                    torch.save(extra_state_dict, extra_path)
-                    log_with_rank(f"Saved extra_state to {os.path.abspath(extra_path)}", rank=self.rank, logger=logger)
+            if self.should_save_optimizer:
+                torch.save(optimizer_state_dict, optim_path)
+                log_with_rank(f"Saved optim to {os.path.abspath(optim_path)}", rank=self.rank, logger=logger)
+
+            if self.should_save_extra:
+                lr_scheduler_state_dict = self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
+                extra_state_dict = {
+                    "lr_scheduler": lr_scheduler_state_dict,
+                    "rng": self.get_rng_state(),
+                }
+                torch.save(extra_state_dict, extra_path)
+                log_with_rank(f"Saved extra_state to {os.path.abspath(extra_path)}", rank=self.rank, logger=logger)
 
         if self.rank == 0:
             if fsdp_version(self.model) == 1:
