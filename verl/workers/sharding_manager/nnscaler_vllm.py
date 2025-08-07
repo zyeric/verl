@@ -40,6 +40,7 @@ from verl.utils.fsdp_utils import fsdp_version, layered_summon_lora_params, load
 from verl.utils.model import convert_weight_keys
 from verl.utils.torch_functional import check_device_is_available
 from verl.utils.vllm_utils import TensorLoRARequest, VLLMHijack, is_version_ge, patch_vllm_moe_model_weight_loader
+from verl.utils.nnscaler_utils import get_nnscaler_full_state_dict
 
 from .base import BaseShardingManager
 
@@ -169,20 +170,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
                 peft_config = peft_model.peft_config.get("default", None)
                 params = __collect_lora_params()
             else:
-                nnscaler_params = self.module.state_dict()
-                full_map = self.module.fullmap
-                # print('nnScaler sharding manager, params keys:', list(nnscaler_params.keys()))
-                params = OrderedDict()
-                for name, param in nnscaler_params.items():
-                    if name not in full_map:
-                        print(f"Warning: {name} not in full_map, skip it")
-                        continue
-                    attr_meta = full_map[name]
-                    # since the model is wrapped during tracing, we need to remove the prefix
-                    # `model.` at the beginning of the name
-                    if attr_meta.orig_name.startswith("model.model."):
-                        orig_name = attr_meta.orig_name[len("model.") :]
-                    params[orig_name] = param
+                params = get_nnscaler_full_state_dict(self.module)
                 # print("nnScaler sharding manager, params after fullmap:", list(params.keys()))
 
             log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)

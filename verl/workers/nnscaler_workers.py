@@ -96,10 +96,10 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             torch.distributed.init_process_group(backend=get_nccl_backend(), timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)), init_method=os.environ.get("DIST_INIT_METHOD", None))
             get_torch_device().set_device(rank)
 
-            if self.config.actor.nnscaler.sequence_parallel:
-                os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-
             # TODO(yizhu1): do we need parallel state maintainer like mpu in nnscaler?
+            # if self.config.actor.nnscaler.sequence_parallel:
+            #     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+
             # mpu.initialize_model_parallel(
             #     tensor_model_parallel_size=self.config.actor.nnscaler.tensor_model_parallel_size,
             #     pipeline_model_parallel_size=self.config.actor.nnscaler.pipeline_model_parallel_size,
@@ -159,6 +159,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             else:
                 assert self.config.ref.get("log_prob_micro_batch_size_per_gpu", None) is not None, "Please note that in the ref policy configuration, `log_prob_micro_batch_size_per_gpu` and `log_prob_micro_batch_size` should not be None at the same time."
             self._ref_is_offload_param = self.config.ref.nnscaler.get("param_offload", False)
+
+        self.can_generate = False
 
     def _build_model_optimizer(self, model_path, optim_config, override_model_config, override_transformer_config):
         # from megatron.core.models.gpt.gpt_model import ModelType
@@ -224,6 +226,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             config=self.hf_config,
             trust_remote_code=self.config.model.get("trust_remote_code", False),
         )
+        # after nnscaler's tracing, we cannot call can_generate anymore, so we store it in a variable here
+        self.can_generate = actor_module.can_generate()
 
         actor_wrapper = ActorWrapper(actor_module)
 
@@ -538,16 +542,20 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
             self.checkpoint_manager = NNScalerCheckpointManager(
+                config=self.config,
+                model_config=self.actor_model_config,
+                hf_config=self.hf_config,
                 model=self.actor_module,
                 optimizer=self.actor_optimizer,
                 lr_scheduler=self.actor_optimizer_scheduler,
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_contents=self.config.actor.checkpoint,
+                with_merged=self.config.actor.nnscaler.get("with_merged", False),
+                load_type=self.config.actor.nnscaler.get("load_type", "deduped"),
+                save_type=self.config.actor.nnscaler.get("save_type", "deduped"),
+                can_generate=self.can_generate,
                 # TODO(yizhu1): check following parameters
                 # role="actor",
-                # config=self.config,
-                # model_config=self.actor_model_config,
-                # hf_config=self.hf_config,
                 # param_dtype=self.param_dtype,
                 # share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
                 # use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,

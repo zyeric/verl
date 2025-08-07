@@ -1,4 +1,5 @@
 from typing import Optional, Tuple
+from collections import OrderedDict
 
 import torch
 
@@ -79,3 +80,30 @@ def hf_patch():
     Qwen2Attention.forward = qwen2_attn_forward
     # TODO(yizhu1): disable for now seems apex in this docker has some issues
     # Qwen2RMSNorm.forward = rmsnorm_fwd
+
+
+def get_nnscaler_full_state_dict(module, offload_to_cpu: bool = False) -> dict:
+    """
+    Get the full state dict of nnscaler module according to the fullmap.
+    Note that currently this function only works for distributed parallel plan like ddp or
+    sequence parallel.
+    """
+    nnscaler_params = module.state_dict()
+    full_map = module.fullmap
+    # print('get_nnscaler_full_state_dict params keys:', list(nnscaler_params.keys()))
+    params = OrderedDict()
+    for name, param in nnscaler_params.items():
+        if name not in full_map:
+            print(f"Warning: {name} not in full_map, skip it")
+            continue
+        attr_meta = full_map[name]
+        # since the model is wrapped during tracing, we need to remove the prefix
+        # `model.` at the beginning of the name
+        if attr_meta.orig_name.startswith("model.model."):
+            orig_name = attr_meta.orig_name[len("model.") :]
+        if offload_to_cpu:
+            # if offload to cpu, we need to move the param to cpu
+            param = param.cpu()
+        params[orig_name] = param
+
+    return params

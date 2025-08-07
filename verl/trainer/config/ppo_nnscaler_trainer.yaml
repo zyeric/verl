@@ -118,13 +118,9 @@ actor_rollout_ref:
       optimizer_offload: False
       plan_ngpus: 1
       runtime_ngpus: 1
-      tensor_model_parallel_size: 1
-      expert_model_parallel_size: 1
-      expert_tensor_parallel_size: null
-      pipeline_model_parallel_size: 1
-      virtual_pipeline_model_parallel_size: null # change VPP interface for parallelism tests
-      context_parallel_size: 1
-      sequence_parallel: True
+      with_merged: False # whether merge sharded model weights and load from merged ckpt
+      load_type: deduped # merged, deduped, sharded
+      save_type: deduped # deduped, sharded
       use_distributed_optimizer: True
       use_dist_checkpointing: False
       dist_checkpointing_path: null
@@ -160,13 +156,6 @@ actor_rollout_ref:
     nnscaler:
       static_seq_len: ${actor_rollout_ref.actor.nnscaler.static_seq_len}
       param_offload: False
-      tensor_model_parallel_size: 1
-      expert_model_parallel_size: 1
-      expert_tensor_parallel_size: None
-      pipeline_model_parallel_size: 1
-      virtual_pipeline_model_parallel_size: null # change VPP interface for parallelism tests
-      context_parallel_size: 1
-      sequence_parallel: True
       use_distributed_optimizer: False
       use_dist_checkpointing: False
       dist_checkpointing_path: null
