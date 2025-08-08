@@ -247,11 +247,12 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # length dimension. To make the sharding easier, model weights are not partitioned
         # currently.
         if self.config.actor.nnscaler.plan_ngpus > 1:
-            if self._is_actor:
-                pc_path = "./examples/nnscaler/seq_parallel.yaml"
-            else:
-                # to save the memory, we will force to partition the model weights for reference model
-                pc_path = "./examples/nnscaler/model_parallel.yaml"
+            pc_path = "./examples/nnscaler/seq_parallel.yaml"
+            # if self._is_actor:
+            #     pc_path = "./examples/nnscaler/seq_parallel.yaml"
+            # else:
+            #     # to save the memory, we will force to partition the model weights for reference model
+            #     pc_path = "./examples/nnscaler/model_parallel.yaml"
         else:
             pc_path = ""
 

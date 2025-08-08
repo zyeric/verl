@@ -121,9 +121,6 @@ actor_rollout_ref:
       with_merged: False # whether merge sharded model weights and load from merged ckpt
       load_type: deduped # merged, deduped, sharded
       save_type: deduped # deduped, sharded
-      use_distributed_optimizer: True
-      use_dist_checkpointing: False
-      dist_checkpointing_path: null
       seed: 42
       override_transformer_config: {} # additional transformer config like: num_layers_in_first(/last)_pipeline_stage
     profile: # profile the actor model in `update_policy`
@@ -156,9 +153,6 @@ actor_rollout_ref:
     nnscaler:
       static_seq_len: ${actor_rollout_ref.actor.nnscaler.static_seq_len}
       param_offload: False
-      use_distributed_optimizer: False
-      use_dist_checkpointing: False
-      dist_checkpointing_path: null
       seed: ${actor_rollout_ref.actor.nnscaler.seed}
       override_transformer_config: ${actor_rollout_ref.actor.nnscaler.override_transformer_config}
     profile:
