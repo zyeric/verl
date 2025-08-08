@@ -226,7 +226,6 @@ def collect_megatron_compute(worker_group, output):
     pp_size = get_global_info(worker_group).pp_size
     for global_rank in range(worker_group.world_size):
         local_rank_info = get_rank_info(worker_group, rank=global_rank)
-        print('DEBUG', global_rank, local_rank_info.tp_rank, local_rank_info.pp_rank, local_rank_info.cp_rank)
         if local_rank_info.tp_rank == 0 and local_rank_info.pp_rank == pp_size - 1 and local_rank_info.cp_rank == 0:
             output_in_dp.append(output[global_rank])
     return output_in_dp

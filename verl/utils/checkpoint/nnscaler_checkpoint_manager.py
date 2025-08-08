@@ -101,6 +101,7 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
         self.load_type = load_type
         self.save_type = save_type
         self.can_generate = can_generate
+        log_with_rank(f"load_type: {self.load_type}, save_type: {self.save_type}", rank=self.rank, logger=logger)
 
     def load_checkpoint(self, local_path: str, hdfs_path: str = None, del_local_after_load=False):
         """

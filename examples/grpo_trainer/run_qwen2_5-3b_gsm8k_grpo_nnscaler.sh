@@ -2,9 +2,6 @@ set -x
 
 # HF_MODEL_PATH=../Qwen2.5-3B-Instruct
 HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
-DIST_CKPT_PATH=${DIST_CKPT_PATH}
-
-# python scripts/converter_hf_to_mcore.py --hf_model_path $HF_MODEL_PATH --output_path $DIST_CKPT_PATH
 
 # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
 # export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -23,14 +20,13 @@ python3 -m verl.trainer.main_ppo --config-path=config \
     actor_rollout_ref.model.path=$HF_MODEL_PATH \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr_warmup_steps=5 \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.nnscaler.static_seq_len=4096 \
     actor_rollout_ref.actor.nnscaler.plan_ngpus=1 \
     actor_rollout_ref.actor.nnscaler.runtime_ngpus=4 \
-    actor_rollout_ref.actor.nnscaler.use_dist_checkpointing=True \
-    actor_rollout_ref.actor.nnscaler.dist_checkpointing_path=$DIST_CKPT_PATH \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -42,8 +38,6 @@ python3 -m verl.trainer.main_ppo --config-path=config \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.n=5 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=40 \
-    actor_rollout_ref.ref.nnscaler.use_dist_checkpointing=True \
-    actor_rollout_ref.ref.nnscaler.dist_checkpointing_path=$DIST_CKPT_PATH \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console'] \

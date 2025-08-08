@@ -20,15 +20,18 @@ class NNScalerWorker(Worker):
         super().__init__(cuda_visible_devices)
 
     def get_nnscaler_global_info(self):
-        # TODO(yizhu1): refine implementation here
-        info = DistGlobalInfo(tp_size=4, dp_size=1, pp_size=1, cp_size=1)
+        from nnscaler.parallel_state import get_plan_ngpus, get_runtime_ngpus
+        tp_size = get_plan_ngpus()
+        dp_size = get_runtime_ngpus() // get_plan_ngpus()
+        info = DistGlobalInfo(tp_size=tp_size, dp_size=dp_size, pp_size=1, cp_size=1)
         return info
 
     def get_nnscaler_rank_info(self):
-        # TODO(yizhu1): refine implementation here
         import torch
+        from nnscaler.parallel_state import get_plan_ngpus
+        plan_ngpus = get_plan_ngpus()
         rank = torch.distributed.get_rank()
-        info = DistRankInfo(tp_rank=rank, dp_rank=0, pp_rank=0, cp_rank=0)
+        info = DistRankInfo(tp_rank=rank % plan_ngpus, dp_rank=rank // plan_ngpus, pp_rank=0, cp_rank=0)
         return info
 
     def _init_hf_config_and_tf_config(

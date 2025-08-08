@@ -25,7 +25,7 @@ from typing import Union
 import torch
 import torch.distributed
 from codetiming import Timer
-# from megatron.core import parallel_state as mpu
+from nnscaler.parallel_state import initialize_parallel_state
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from verl import DataProto
@@ -63,16 +63,18 @@ def set_random_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
-    # TODO(yizhu1): check tensor_parallel seed
+    # NOTE: megatron set seed for data parallel, tensor parallel and expert parallel carefully
+    # to make sure operations like parameter initialization and dropout are correctly. Since dropout
+    # is set to 0.0 in models like Qwen and models weights are honestly traced in nnscaler, we
+    # omit the seed setting for now.
     # if get_torch_device().device_count() > 0:
     #     from megatron.core import tensor_parallel
-
     #     tensor_parallel.model_parallel_cuda_manual_seed(seed)
 
     # FIXME: torch cumsum not support deterministic (used in vllm sampler),
     # https://github.com/pytorch/pytorch/issues/89492
-    # torch.use_deterministic_algorithms(True, warn_only=True)
-    # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
 
 class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
@@ -96,21 +98,14 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             torch.distributed.init_process_group(backend=get_nccl_backend(), timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)), init_method=os.environ.get("DIST_INIT_METHOD", None))
             get_torch_device().set_device(rank)
 
-            # TODO(yizhu1): do we need parallel state maintainer like mpu in nnscaler?
+            # TODO(yizhu1): check this environment variable
             # if self.config.actor.nnscaler.sequence_parallel:
             #     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 
-            # mpu.initialize_model_parallel(
-            #     tensor_model_parallel_size=self.config.actor.nnscaler.tensor_model_parallel_size,
-            #     pipeline_model_parallel_size=self.config.actor.nnscaler.pipeline_model_parallel_size,
-            #     virtual_pipeline_model_parallel_size=self.config.actor.nnscaler.virtual_pipeline_model_parallel_size,
-            #     pipeline_model_parallel_split_rank=None,
-            #     use_sharp=False,
-            #     context_parallel_size=self.config.actor.nnscaler.context_parallel_size,
-            #     expert_model_parallel_size=self.config.actor.nnscaler.expert_model_parallel_size,
-            #     expert_tensor_parallel_size=self.config.actor.nnscaler.expert_tensor_parallel_size,
-            #     nccl_communicator_config_path=None,
-            # )
+            initialize_parallel_state(
+                plan_ngpus=self.config.actor.nnscaler.plan_ngpus,
+                runtime_ngpus=self.config.actor.nnscaler.runtime_ngpus,
+            )
         self.nnscaler_cfg = self.config.actor.nnscaler
         self.data_parallel_world_size = self.nnscaler_cfg.runtime_ngpus // self.nnscaler_cfg.plan_ngpus
 
@@ -163,10 +158,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         self.can_generate = False
 
     def _build_model_optimizer(self, model_path, optim_config, override_model_config, override_transformer_config):
-        # from megatron.core.models.gpt.gpt_model import ModelType
-
-        # from verl.utils.megatron.optimizer import get_megatron_optimizer, get_megatron_optimizer_param_scheduler
-        # from verl.utils.megatron_utils import get_model, init_megatron_optim_config
         from verl.utils.model import get_generation_config, print_model_size
         from verl.utils.torch_dtypes import PrecisionType
         from verl.utils.nnscaler_utils import hf_patch
@@ -231,7 +222,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         actor_wrapper = ActorWrapper(actor_module)
 
-        # TODO(yizhu1): remove hard code here 
         instance_name = nnscaler_config.get("instance_name", "nnscaler_rl")
         if self._is_actor:
             instance_name = f"{instance_name}_actor"
@@ -246,8 +236,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         print(f"nnScaler static sequence length: {nnscaler_config.static_seq_len}")
         dummy_input = {
             "input_ids": torch.randint(0, 1000, (bsz, seq_len), dtype=torch.int64),
-            # TODO(yizhu1): seems attention_mask should be None for packing
-            "attention_mask": torch.ones((bsz, seq_len), dtype=torch.int64),
+            # setting attention_mask to None to align with the seq packing implementation
+            "attention_mask": None,
             "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
             "use_cache": False,
         }
@@ -256,15 +246,19 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # recompute the model by layer, and force to partition the attention by sequence
         # length dimension. To make the sharding easier, model weights are not partitioned
         # currently.
-        if self._is_actor:
-            pc_path = "./examples/nnscaler/seq_parallel.yaml"
+        if self.config.actor.nnscaler.plan_ngpus > 1:
+            if self._is_actor:
+                pc_path = "./examples/nnscaler/seq_parallel.yaml"
+            else:
+                # to save the memory, we will force to partition the model weights for reference model
+                pc_path = "./examples/nnscaler/model_parallel.yaml"
         else:
-            # to save the memory, we will force to partition the model weights for reference model
-            pc_path = "./examples/nnscaler/model_parallel.yaml"
+            pc_path = ""
+
         print(f'nnScaler parallelize model for {self.role}, pc_path: {pc_path}')
         compute_config = ComputeConfig(
-            plan_ngpus=4,
-            runtime_ngpus=4,
+            plan_ngpus=self.config.actor.nnscaler.plan_ngpus,
+            runtime_ngpus=self.config.actor.nnscaler.runtime_ngpus,
             constant_folding=True,
             use_zero=1,
             inference_only=self._is_ref,
@@ -335,7 +329,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             if self.rank == 0:
                 print(f"Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}")
 
-            # TODO(yizhu1): check LR scheduler
             if warmup_style == "constant":
                 actor_optimizer_scheduler = get_constant_schedule_with_warmup(optimizer=actor_optimizer, num_warmup_steps=num_warmup_steps)
             elif warmup_style == "cosine":
@@ -554,12 +547,6 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 load_type=self.config.actor.nnscaler.get("load_type", "deduped"),
                 save_type=self.config.actor.nnscaler.get("save_type", "deduped"),
                 can_generate=self.can_generate,
-                # TODO(yizhu1): check following parameters
-                # role="actor",
-                # param_dtype=self.param_dtype,
-                # share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
-                # use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,
-                # use_checkpoint_opt_param_scheduler=self.config.actor.optim.use_checkpoint_opt_param_scheduler,
             )
         get_torch_device().empty_cache()
         log_gpu_memory_usage("After init_model finish", logger=logger)
@@ -588,7 +575,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         lr = self.actor_optimizer_scheduler.get_last_lr()[0]
         metrics["actor/lr"] = lr
-        self.actor_optimizer_scheduler.step(1)
+        self.actor_optimizer_scheduler.step()
 
         # TODO: here, we should return all metrics
         output = DataProto(meta_info={"metrics": metrics})
