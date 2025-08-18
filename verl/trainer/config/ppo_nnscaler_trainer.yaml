@@ -116,6 +116,7 @@ actor_rollout_ref:
       param_offload: False
       grad_offload: False
       optimizer_offload: False
+      trace_strategy: "reuse_cache"
       plan_ngpus: 1
       runtime_ngpus: 1
       with_merged: False # whether merge sharded model weights and load from merged ckpt
@@ -152,6 +153,9 @@ actor_rollout_ref:
     entropy_checkpointing: ${actor_rollout_ref.actor.entropy_checkpointing}
     nnscaler:
       static_seq_len: ${actor_rollout_ref.actor.nnscaler.static_seq_len}
+      plan_ngpus: ${actor_rollout_ref.actor.nnscaler.plan_ngpus}
+      runtime_ngpus: ${actor_rollout_ref.actor.nnscaler.runtime_ngpus}
+      trace_strategy: "reuse_cache"
       param_offload: False
       seed: ${actor_rollout_ref.actor.nnscaler.seed}
       override_transformer_config: ${actor_rollout_ref.actor.nnscaler.override_transformer_config}

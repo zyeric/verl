@@ -263,6 +263,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             constant_folding=True,
             use_zero=1,
             inference_only=self._is_ref,
+            trace_strategy=self.config.actor.nnscaler.trace_strategy,
             pas_config={
                 "partition_constraints_path": pc_path,
                 # Note: recompute_modules will not take effect for the reference model, since
