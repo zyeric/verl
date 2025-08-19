@@ -160,7 +160,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
 
             log_gpu_memory_usage("Before state_dict() in sharding manager memory", logger=logger)
             if self.offload_param:
-                load_fsdp_model_to_gpu(self.module)
+                self.module.load_params()
 
             peft_config = None
             peft_model = getattr(self.module, "_fsdp_wrapped_module", self.module)
@@ -197,7 +197,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
                 log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
                 del params
                 if self.offload_param:
-                    offload_fsdp_model_to_cpu(self.module)
+                    self.module.offload_params()
                 get_torch_device().empty_cache()
 
                 if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:

@@ -156,7 +156,7 @@ actor_rollout_ref:
       plan_ngpus: ${actor_rollout_ref.actor.nnscaler.plan_ngpus}
       runtime_ngpus: ${actor_rollout_ref.actor.nnscaler.runtime_ngpus}
       trace_strategy: "reuse_cache"
-      param_offload: False
+      param_offload: ${actor_rollout_ref.actor.nnscaler.param_offload}
       seed: ${actor_rollout_ref.actor.nnscaler.seed}
       override_transformer_config: ${actor_rollout_ref.actor.nnscaler.override_transformer_config}
     profile:

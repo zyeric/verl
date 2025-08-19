@@ -1,11 +1,14 @@
 set -x
 
-# HF_MODEL_PATH=../Qwen2.5-3B-Instruct
-HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
+HF_MODEL_PATH=../Qwen2.5-3B-Instruct
+# HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
 
 # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
 # export VLLM_ATTENTION_BACKEND=XFORMERS
 export CUDA_DEVICE_MAX_CONNECTIONS=1 # For megatron communication/computation overlapping
+# useful for debugging
+# export VERL_LOGGING_LEVEL=DEBUG
+# export CUDA_LAUNCH_BLOCKING=1
 
 python3 -m verl.trainer.main_ppo --config-path=config \
     --config-name='ppo_nnscaler_trainer.yaml'\
@@ -27,6 +30,7 @@ python3 -m verl.trainer.main_ppo --config-path=config \
     actor_rollout_ref.actor.nnscaler.static_seq_len=4096 \
     actor_rollout_ref.actor.nnscaler.plan_ngpus=2 \
     actor_rollout_ref.actor.nnscaler.runtime_ngpus=4 \
+    actor_rollout_ref.actor.nnscaler.param_offload=True \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
