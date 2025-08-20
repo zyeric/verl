@@ -293,6 +293,204 @@ def rearrange_micro_batches(batch, max_token_len, dp_group=None, num_batches_div
     return micro_batches, micro_bsz_idx
 
 
+def first_fit_decreasing_partition(seqlen_list: List[int], max_token_len: int):
+    """
+    Partition sequence lengths using First-Fit-Decreasing algorithm to minimize the number of bins.
+
+    This algorithm sorts items in decreasing order, then places each item in the first bin
+    that has enough remaining capacity. It's an approximation algorithm for the bin packing problem.
+
+    Args:
+        seqlen_list (List[int]): A list of sequence lengths for each item.
+        max_token_len (int): Maximum total token length allowed per partition (bin capacity).
+
+    Returns:
+        List[List[int]]: A list of partitions, where each partition contains indices from
+                        the original seqlen_list that fit within max_token_len.
+    """
+    # Create (seqlen, original_index) pairs and sort by seqlen in decreasing order
+    items = [(seqlen, i) for i, seqlen in enumerate(seqlen_list)]
+    items.sort(reverse=True)  # Sort in decreasing order
+
+    # Initialize bins (partitions)
+    bins = []  # List of (current_sum, indices_list) pairs
+
+    # First-Fit-Decreasing algorithm
+    for seqlen, original_idx in items:
+        # Find the first bin that can accommodate this item
+        placed = False
+        for bin_idx, (current_sum, indices) in enumerate(bins):
+            if current_sum + seqlen <= max_token_len:
+                # Item fits in this bin
+                bins[bin_idx] = (current_sum + seqlen, indices + [original_idx])
+                placed = True
+                break
+
+        if not placed:
+            # No existing bin can accommodate this item, create a new bin
+            bins.append((seqlen, [original_idx]))
+
+    # Extract just the indices lists and sort indices within each partition
+    partitions = [sorted(indices) for _, indices in bins]
+    return partitions
+
+
+def first_fit_decreasing_partition_with_constraints(seqlen_list: List[int], max_token_len: int, target_num_partitions: int = None):
+    """
+    Enhanced FFD partition that can handle target number of partitions while respecting token limits.
+
+    Args:
+        seqlen_list (List[int]): A list of sequence lengths for each item.
+        max_token_len (int): Maximum total token length allowed per partition.
+        target_num_partitions (int, optional): Target number of partitions. If None, uses optimal FFD.
+
+    Returns:
+        List[List[int]]: A list of partitions that respect both token limits and target partition count.
+
+    Raises:
+        ValueError: If target_num_partitions is less than the minimum required by FFD algorithm.
+        RuntimeError: If unable to fit all sequences within the constraints.
+    """
+    if not seqlen_list:
+        return []
+
+    # Get FFD optimal solution first
+    ffd_partitions = first_fit_decreasing_partition(seqlen_list, max_token_len)
+
+    # If no target specified, return FFD optimal
+    if target_num_partitions is None:
+        return ffd_partitions
+
+    # Cannot have more partitions than items
+    target_num_partitions = min(target_num_partitions, len(seqlen_list))
+
+    # If target equals FFD optimal, return FFD result
+    if target_num_partitions == len(ffd_partitions):
+        return ffd_partitions
+
+    # If target is less than FFD optimal, this is impossible while respecting token limits
+    if target_num_partitions < len(ffd_partitions):
+        raise ValueError(
+            f"Cannot create {target_num_partitions} partitions while respecting max_token_len={max_token_len}. "
+            f"FFD algorithm requires at least {len(ffd_partitions)} partitions. "
+            f"Either increase target_num_partitions to >= {len(ffd_partitions)} or increase max_token_len."
+        )
+
+    # Target is more than FFD optimal, try to create more partitions
+    # Use best-fit decreasing to distribute items across target number of bins
+    items = [(seqlen, i) for i, seqlen in enumerate(seqlen_list)]
+    items.sort(reverse=True)  # Sort in decreasing order
+
+    # Initialize target number of bins
+    bins = [0] * target_num_partitions  # Track current sums
+    partitions = [[] for _ in range(target_num_partitions)]
+
+    for seqlen, original_idx in items:
+        # Find the bin with minimum sum that can still accommodate this item
+        best_bin_idx = None
+        best_remaining_space = float('inf')
+
+        for bin_idx in range(target_num_partitions):
+            if bins[bin_idx] + seqlen <= max_token_len:
+                remaining_space = max_token_len - (bins[bin_idx] + seqlen)
+                if remaining_space < best_remaining_space:
+                    best_remaining_space = remaining_space
+                    best_bin_idx = bin_idx
+
+        if best_bin_idx is not None:
+            # Place in the best fitting bin
+            bins[best_bin_idx] += seqlen
+            partitions[best_bin_idx].append(original_idx)
+        else:
+            # Cannot fit in any bin with target partition count
+            raise RuntimeError(
+                f"Cannot fit sequence with length {seqlen} (index {original_idx}) into any of the "
+                f"{target_num_partitions} partitions while respecting max_token_len={max_token_len}. "
+                f"Current partition loads: {bins}. "
+                f"Consider reducing target_num_partitions or increasing max_token_len."
+            )
+
+    # Sort indices within each partition and filter out empty partitions
+    result_partitions = [sorted(partition) for partition in partitions if partition]
+    return result_partitions
+
+
+def rearrange_micro_batches_ffd(batch, max_token_len, dp_group=None, num_batches_divided_by=None, same_micro_num_in_dp=True, min_num_micro_batch=None):
+    """
+    Split a batch into micro-batches using First-Fit-Decreasing algorithm to minimize the number of micro-batches.
+
+    This function uses the First-Fit-Decreasing bin packing algorithm to partition sequences,
+    which minimizes the total number of groups while ensuring each group's total token count
+    does not exceed max_token_len.
+
+    Args:
+        batch (TensorDict): must include "attention_mask" (B*S); other fields are sliced similarly.
+        max_token_len (int): max sum of attention_mask per micro-batch.
+        dp_group (optional): torch.distributed group for data-parallel sync.
+        num_batches_divided_by (optional): virtual pipeline parallel size, for megatron.
+        same_micro_num_in_dp (bool): if True and dp_group set, pad all ranks to the same count.
+        min_num_micro_batch (int, optional): force at least this many splits (pads empty ones).
+
+    Returns:
+        List[TensorDict]: the micro-batches.
+        List[List[int]]: index lists mapping each micro-batch back to original positions.
+    """
+    # this is per local micro_bsz
+    max_seq_len = batch["attention_mask"].shape[-1]
+    assert max_token_len >= max_seq_len, f"max_token_len must be greater than the sequence length. Got {max_token_len=} and {max_seq_len=}"
+    seq_len_effective: torch.Tensor = batch["attention_mask"].sum(dim=1)
+    total_seqlen = seq_len_effective.sum().item()
+    seq_len_effective_list = seq_len_effective.tolist()
+
+    # Start with FFD algorithm to get the optimal number of micro-batches
+    ffd_num_micro_batches = len(first_fit_decreasing_partition(seq_len_effective_list, max_token_len))
+    num_micro_batches = ffd_num_micro_batches
+
+    # Apply constraints similar to original function
+    if min_num_micro_batch is not None:
+        num_micro_batches = max(min_num_micro_batch, num_micro_batches)
+
+    if dist.is_initialized() and same_micro_num_in_dp:
+        num_micro_batches = torch.tensor([num_micro_batches], device=get_device_name())
+        dist.all_reduce(num_micro_batches, op=dist.ReduceOp.MAX, group=dp_group)
+        num_micro_batches = num_micro_batches.cpu().item()
+
+    if num_batches_divided_by is not None:
+        num_micro_batches = roundup_divisible(num_micro_batches, num_batches_divided_by)
+
+    # Ensure we don't exceed the number of sequences (to avoid empty partitions)
+    num_micro_batches = min(num_micro_batches, len(seq_len_effective_list))
+
+    # Try to use enhanced FFD algorithm with proper error handling
+    try:
+        micro_bsz_idx = first_fit_decreasing_partition_with_constraints(
+            seq_len_effective_list, max_token_len, num_micro_batches
+        )
+    except (ValueError, RuntimeError) as e:
+        # If FFD with constraints fails, fall back to original algorithm
+        import warnings
+        warnings.warn(
+            f"FFD algorithm failed with constraints (target={num_micro_batches}, "
+            f"ffd_optimal={ffd_num_micro_batches}): {str(e)}. "
+            f"Falling back to balanced partitioning algorithm.",
+            UserWarning
+        )
+        # Use original balanced partitioning as fallback
+        micro_bsz_idx = get_seqlen_balanced_partitions(seq_len_effective_list, num_micro_batches, equal_size=False)
+
+    micro_batches = []
+
+    for partition in micro_bsz_idx:
+        curr_micro_batch = []
+        for idx in partition:
+            curr_micro_batch.append(batch[idx : idx + 1])
+        curr_micro_batch = torch.cat(curr_micro_batch)
+
+        micro_batches.append(curr_micro_batch)
+
+    return micro_batches, micro_bsz_idx
+
+
 def get_reverse_idx(idx_map):
     """
     Build the inverse of an index mapping.

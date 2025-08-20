@@ -47,7 +47,7 @@ from verl.utils.device import get_device_id, get_device_name, is_cuda_available
 # from verl.utils.megatron.tensor_parallel import vocab_parallel_entropy, vocab_parallel_log_probs_from_logits
 # from verl.utils.megatron_utils import get_model_config
 from verl.utils.py_functional import append_to_dict
-from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
+from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches, rearrange_micro_batches_ffd
 from verl.utils.torch_functional import logprobs_from_logits
 from verl.workers.actor import BasePPOActor
 from verl.utils.ulysses import _unpad_tensor
@@ -136,7 +136,7 @@ class NNScalerPPOActor(BasePPOActor):
         )
 
         self.static_length = self.config.nnscaler.static_seq_len
-        self.nnscaler_max_token_len = self.static_length // 8 * 7
+        self.nnscaler_max_token_len = self.static_length
         self.use_remove_padding = self.config.get("use_remove_padding", False)
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
 
@@ -395,7 +395,7 @@ class NNScalerPPOActor(BasePPOActor):
                     return micro_batches_dp, None
             elif use_dynamic_bsz:
                 max_token_len = self.nnscaler_max_token_len
-                micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
+                micro_batches, indices = rearrange_micro_batches_ffd(batch=batch, max_token_len=max_token_len)
                 return micro_batches, indices
             else:
                 micro_batches = batch.split(micro_batch_size)
@@ -478,7 +478,7 @@ class NNScalerPPOActor(BasePPOActor):
                         micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
                 elif self.config.use_dynamic_bsz:
                     max_token_len = self.nnscaler_max_token_len
-                    micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
+                    micro_batches, _ = rearrange_micro_batches_ffd(batch=mini_batch, max_token_len=max_token_len)
                 else:
                     self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                     # split batch into micro_batches

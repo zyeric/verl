@@ -109,6 +109,8 @@ def _pad_tensor(x: Tensor, dim: int, padding_size: int) -> Tensor:
 
 
 def _unpad_tensor(x: Tensor, dim: int, padding_size: int) -> Tensor:
+    if padding_size == 0:
+        return x
     slc = [slice(None)] * len(x.shape)
     slc[dim] = slice(0, -padding_size)
     return x[slc]
