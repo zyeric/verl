@@ -201,14 +201,14 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 super().__init__()
                 self.model = model
 
-            def forward(self, input_ids, attention_mask, position_ids):
+            def forward(self, input_ids, attention_mask, position_ids, use_cache):
                 if torch_dtype == torch.float32:
                     ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
                 else:
                     import contextlib
                     ctx = contextlib.nullcontext()
                 with ctx:
-                    output = self.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids)
+                    output = self.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, use_cache=use_cache)
                     return output.logits
 
         actor_module = AutoModelForCausalLM.from_pretrained(
@@ -241,22 +241,8 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             "position_ids": torch.arange(seq_len).expand(bsz, -1).to(torch.int64),
             "use_cache": False,
         }
-        # TODO(yizhu1):
-        # Since we are focusing on the long context training scenario, we will force to
-        # recompute the model by layer, and force to partition the attention by sequence
-        # length dimension. To make the sharding easier, model weights are not partitioned
-        # currently.
-        if self.config.actor.nnscaler.plan_ngpus > 1:
-            pc_path = "./examples/nnscaler/seq_parallel.yaml"
-            # if self._is_actor:
-            #     pc_path = "./examples/nnscaler/seq_parallel.yaml"
-            # else:
-            #     # to save the memory, we will force to partition the model weights for reference model
-            #     pc_path = "./examples/nnscaler/model_parallel.yaml"
-        else:
-            pc_path = ""
 
-        print(f'nnScaler parallelize model for {self.role}, pc_path: {pc_path}')
+        print(f'nnScaler parallelize model for {self.role}, pc_path: {self.config.actor.nnscaler.pc_path}')
         compute_config = ComputeConfig(
             plan_ngpus=self.config.actor.nnscaler.plan_ngpus,
             runtime_ngpus=self.config.actor.nnscaler.runtime_ngpus,
@@ -265,11 +251,19 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             inference_only=self._is_ref,
             trace_strategy=self.config.actor.nnscaler.trace_strategy,
             pas_config={
-                "partition_constraints_path": pc_path,
+                # TODO(yizhu1):
+                # Since we are focusing on the long context training scenario, we will force to
+                # recompute the model by layer, and force to partition the attention by sequence
+                # length dimension.
+                # To make the sharding easier, when plan_ngpus > 1, actor model's weights are not partitioned
+                # currently, you can use "./examples/nnscaler/seq_parallel.yaml" to enforce it.
+                # To save the memory, you can use "./examples/nnscaler/model_parallel.yaml" to partition
+                # reference model's weights.
+                "partition_constraints_path": self.config.actor.nnscaler.pc_path,
                 # Note: recompute_modules will not take effect for the reference model, since
                 # reference model is only used for log probability computation and does not
                 # require backward pass.
-                "recompute_modules": "Qwen2DecoderLayer",
+                "recompute_modules": self.config.actor.nnscaler.recompute_modules,
             }
         )
         print(f'nnScaler parallelize model for {self.role}, start at {datetime.datetime.now()}')

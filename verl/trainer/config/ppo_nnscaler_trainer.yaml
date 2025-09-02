@@ -122,6 +122,8 @@ actor_rollout_ref:
       with_merged: False # whether merge sharded model weights and load from merged ckpt
       load_type: deduped # merged, deduped, sharded
       save_type: deduped # deduped, sharded
+      recompute_modules: "" # specify modules to recompute
+      pc_path: "" # partition constraint path
       seed: 42
       override_transformer_config: {} # additional transformer config like: num_layers_in_first(/last)_pipeline_stage
     profile: # profile the actor model in `update_policy`
@@ -157,6 +159,8 @@ actor_rollout_ref:
       runtime_ngpus: ${actor_rollout_ref.actor.nnscaler.runtime_ngpus}
       trace_strategy: "reuse_cache"
       param_offload: ${actor_rollout_ref.actor.nnscaler.param_offload}
+      recompute_modules: ${actor_rollout_ref.actor.nnscaler.recompute_modules} # specify modules to recompute, for ref it takes no effect
+      pc_path: ${actor_rollout_ref.actor.nnscaler.pc_path} # partition constraint path
       seed: ${actor_rollout_ref.actor.nnscaler.seed}
       override_transformer_config: ${actor_rollout_ref.actor.nnscaler.override_transformer_config}
     profile:
