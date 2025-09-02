@@ -1,7 +1,7 @@
 set -x
 
-HF_MODEL_PATH=../Qwen2.5-3B-Instruct
-# HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
+# HF_MODEL_PATH=../Qwen2.5-3B-Instruct
+HF_MODEL_PATH=../Qwen2.5-1.5B-Instruct
 
 # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
 # export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -48,7 +48,7 @@ python3 -m verl.trainer.main_ppo --config-path=config \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_nnscaler' \
-    trainer.experiment_name='qwen2_5-3b_nnscaler_0902' \
+    trainer.experiment_name='qwen2_5-1.5b_nnscaler_0902' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.val_before_train=False \
