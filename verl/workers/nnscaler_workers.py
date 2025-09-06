@@ -480,7 +480,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             )
             if self._is_offload_param:
                 log_gpu_memory_usage("Before offload actor params and grad during init", logger=logger)
-                self.actor_module.offload_params()
+                self.actor_module.sleep()
                 log_gpu_memory_usage("After offload actor params and grad during init", logger=logger)
             if self._is_offload_optimizer:
                 assert False, "TODO: implement offload optimizer for NNScalerWorker"
@@ -525,7 +525,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 actor_optimizer=None,
             )
             if self._ref_is_offload_param:
-                self.ref_module.offload_params()
+                self.ref_module.sleep()
                 log_gpu_memory_usage("After offload ref params during init", logger=logger)
 
         if self._is_actor:
@@ -554,7 +554,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         assert self._is_actor
         if self._is_offload_param:
             log_gpu_memory_usage("Before load actor params and grad during update_actor", logger=logger)
-            self.actor_module.load_params()
+            self.actor_module.wake_up()
             log_gpu_memory_usage("After load actor params and grad during update_actor", logger=logger)
         if self._is_offload_optimizer:
             load_megatron_optimizer(self.actor_optimizer)
@@ -580,7 +580,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
 
         if self._is_offload_param:
             log_gpu_memory_usage("Before offload actor params and grad during update_actor", logger=logger)
-            self.actor_module.offload_params()
+            self.actor_module.sleep()
             log_gpu_memory_usage("After offload actor params and grad during update_actor", logger=logger)
         if self._is_offload_optimizer:
             offload_megatron_optimizer(self.actor_optimizer)
@@ -628,7 +628,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     def compute_ref_log_prob(self, data: DataProto):
         assert self._is_ref
         if self._ref_is_offload_param:
-            self.ref_module.load_params()
+            self.ref_module.wake_up()
             log_gpu_memory_usage("After load ref params and grad during compute_ref_log_prob", logger=logger)
         micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
@@ -640,7 +640,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         output = DataProto.from_dict(tensors={"ref_log_prob": output})
         output = output.to("cpu")
         if self._ref_is_offload_param:
-            self.ref_module.offload_params()
+            self.ref_module.sleep()
             log_gpu_memory_usage("After offload ref params and grad during compute_ref_log_prob", logger=logger)
         get_torch_device().empty_cache()
         return output
@@ -652,7 +652,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         assert self._is_actor
         if self._is_offload_param:
             log_gpu_memory_usage("Before load actor params and grad during compute_log_prob", logger=logger)
-            self.actor_module.load_params()
+            self.actor_module.wake_up()
             log_gpu_memory_usage("After load actor params and grad during compute_log_prob", logger=logger)
         # we should always recompute old_log_probs when it is HybridEngine
         data.meta_info["micro_batch_size"] = self.config.rollout.log_prob_micro_batch_size_per_gpu
@@ -666,7 +666,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
         # clear kv cache
         if self._is_offload_param:
             log_gpu_memory_usage("Before offload actor params and grad during compute_log_prob", logger=logger)
-            self.actor_module.offload_params()
+            self.actor_module.sleep()
             log_gpu_memory_usage("After offload actor params and grad during compute_log_prob", logger=logger)
         get_torch_device().empty_cache()
         return output
@@ -674,10 +674,10 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def load_checkpoint(self, checkpoint_path, hdfs_path=None, del_local_after_load=True):
         if self._is_offload_param:
-            self.actor_module.load_params()
+            self.actor_module.wake_up()
         self.checkpoint_manager.load_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, del_local_after_load=del_local_after_load)
         if self._is_offload_param:
-            self.actor_module.offload_params()
+            self.actor_module.sleep()
         if self._is_offload_optimizer:
             offload_megatron_optimizer(self.actor_optimizer)
 
@@ -688,11 +688,11 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, checkpoint_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         if self._is_offload_param:
-            self.actor_module.load_params()
+            self.actor_module.wake_up()
         self.checkpoint_manager.save_checkpoint(local_path=checkpoint_path, hdfs_path=hdfs_path, global_step=global_step, max_ckpt_to_keep=max_ckpt_to_keep)
         torch.distributed.barrier()
         if self._is_offload_param:
-            self.actor_module.offload_params()
+            self.actor_module.sleep()
 
 
 class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
