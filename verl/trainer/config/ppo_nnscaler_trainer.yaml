@@ -119,6 +119,7 @@ actor_rollout_ref:
       trace_strategy: "reuse_cache"
       plan_ngpus: 1
       runtime_ngpus: 1
+      n_gpus_per_node: ${trainer.n_gpus_per_node}
       with_merged: False # whether merge sharded model weights and load from merged ckpt
       load_type: deduped # merged, deduped, sharded
       save_type: deduped # deduped, sharded

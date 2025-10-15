@@ -15,7 +15,7 @@
 import logging
 import os
 import warnings
-from typing import Optional, Union
+from typing import Optional, Union, Any, Dict
 from pathlib import Path
 
 import torch
@@ -34,6 +34,8 @@ from verl.utils.logger import log_with_rank
 
 import nnscaler
 from nnscaler.runtime.module import ParallelModule
+from nnscaler.runtime.device import DeviceGroup
+from nnscaler.cli.trainer import Trainer
 
 from .checkpoint_manager import BaseCheckpointManager
 
@@ -71,6 +73,7 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
         lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
         processing_class: Union[PreTrainedTokenizer, ProcessorMixin] = None,
         checkpoint_contents: DictConfig = None,
+        n_gpus_per_node: int = 1,
         with_merged: bool = False,
         load_type: str = "deduped",
         save_type: str = "deduped",
@@ -93,15 +96,104 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
         assert self.should_load_model, "current implementation assumes model should be loaded"
         assert self.should_save_model, "current implementation assumes model should be saved"
 
+        # These env variables are not correctly set in verl
+        # self.local_world_size = int(os.environ.get('LOCAL_WORLD_SIZE'))
+        # self.local_rank = int(os.environ.get('LOCAL_RANK'))
+        # self.node_rank = int(os.environ.get('GROUP_RANK'))
+        self.local_world_size = n_gpus_per_node
+        self.local_rank = self.rank % self.local_world_size
+        self.node_rank = self.rank // self.local_world_size
+        self.local_ranks = list(
+            range(
+                self.node_rank * self.local_world_size,
+                (self.node_rank + 1) * self.local_world_size
+            )
+        )
+        self.local_rank0 = self.local_ranks[0]
+        # create local process groups
+        for local_rank0 in range(0, self.world_size, self.local_world_size):
+            DeviceGroup().get_group(list(range(local_rank0, local_rank0 + self.local_world_size)))
+
         self.config = config
         self.model_config = model_config
         self.hf_config = hf_config
-        # TODO(yizhu1): implement with_merged logic
         self.with_merged = with_merged
         self.load_type = load_type
         self.save_type = save_type
         self.can_generate = can_generate
         log_with_rank(f"load_type: {self.load_type}, save_type: {self.save_type}", rank=self.rank, logger=logger)
+
+    def _broadcast_merged_state_dict(
+        self,
+        state_dict: Dict[str, Any],
+        src_rank: int = 0,
+        dst_ranks: Optional[list[int]] = None,
+    ):
+        """
+        Broadcast the merged state dict to all ranks.
+        We can't broadcast the whole state_dict at once, because it may be too large, and leads to OOM.
+        Here we will break the model and optimizer state_dict into smaller pieces and broadcast them one by one.
+        Please note we use `torch.distributed.broadcast_object_list` to broadcast the state_dict (including tensors inside).
+        """
+        dst_ranks = dst_ranks or list(range(torch.distributed.get_world_size()))
+        if src_rank not in dst_ranks or self.rank not in dst_ranks:
+            raise ValueError(f"src_rank and current rank must be in dst_ranks: {dst_ranks}")
+        pg = DeviceGroup().get_group(dst_ranks)
+
+        if self.rank == src_rank:
+            if state_dict is None:
+                raise ValueError("state_dict should not be None in rank 0 when broadcasting")
+        else:
+            if state_dict is not None:
+                raise ValueError("state_dict should be None in other ranks when broadcasting")
+            state_dict = {}
+
+        def _broadcast_keys(sdict: Dict[str, Any], set_keys=True):
+            if self.rank == src_rank:
+                state_keys = list(sdict.keys())
+            else:
+                state_keys = None
+            state_key_list = [state_keys]
+            torch.distributed.broadcast_object_list(state_key_list, src=src_rank, group=pg)
+            state_keys = state_key_list[0]
+            if set_keys and self.rank != src_rank:
+                for key in state_keys:
+                    sdict[key] = {}  # assume the values are empty dicts
+            return state_keys
+
+        def _broadcast_value(sdict, key):
+            if self.rank == src_rank:
+                value_list = [sdict[key]]
+            else:
+                value_list = [None]
+            torch.distributed.broadcast_object_list(value_list, src=src_rank, group=pg)
+            if self.rank != src_rank:
+                sdict[key] = value_list[0]
+
+        def _broadcast_values(sdict, keys):
+            for key in keys:
+                _broadcast_value(sdict, key)
+
+        state_keys = _broadcast_keys(state_dict)
+
+        for skey in state_keys:
+            logger.info(f"Broadcasting {skey}.")
+            if skey == 'optimizer':
+                opt_keys = _broadcast_keys(state_dict['optimizer'])
+                opt_keys_without_state = [
+                    k for k in opt_keys if k != 'state'
+                ]
+                _broadcast_values(state_dict['optimizer'], opt_keys_without_state)
+                idxs = _broadcast_keys(state_dict['optimizer']['state'])
+                for idx in idxs:
+                    idx_keys = _broadcast_keys(state_dict['optimizer']['state'][idx])
+                    _broadcast_values(state_dict['optimizer']['state'][idx], idx_keys)
+            elif skey == 'model':
+                model_keys = _broadcast_keys(state_dict['model'])
+                _broadcast_values(state_dict['model'], model_keys)
+            else:
+                _broadcast_value(state_dict, skey)
+        return state_dict
 
     def load_checkpoint(self, local_path: str, hdfs_path: str = None, del_local_after_load=False):
         """
@@ -125,25 +217,54 @@ class NNScalerCheckpointManager(BaseCheckpointManager):
         if self.should_load_optimizer:
             assert self.optimizer is not None, "optimizer must be provided when checkpoint_contents.load includes ['optimizer']"
 
+        # copy from `_load_checkpoint` in nnscaler/cli/trainer.py
         resume_from = Path(local_path)
+        logger.info(f"Resuming from {resume_from}")
+        load_from_merged = False
 
-        # copy from nnscaler/cli/trainer.py
         if resume_from.is_file():
-            resume_from = resume_from   # when we load from merged checkpoint
+            # when we load from merged checkpoint
+            load_from_merged = True
             state_dict = torch.load(resume_from, map_location='cpu', weights_only=False)
         else:
             ckpt_files = list(resume_from.glob('*.ckpt'))
             rank_ckpt_files = {int(f.stem): f for f in ckpt_files if f.stem.isdigit()}
             if set(rank_ckpt_files.keys()) != set(range(len(rank_ckpt_files))):
                 raise ValueError(f"Checkpoint files in {resume_from} are not complete: {rank_ckpt_files.keys()}")
+            if len(rank_ckpt_files) != self.world_size and self.with_merged is False:
+                raise ValueError(f"World size is different with original one: {len(rank_ckpt_files)} != {self.world_size}")
 
-            resume_from = resume_from / f'{self.rank}.ckpt'
-            state_dict = torch.load(resume_from, map_location='cpu', weights_only=False)
+            if len(rank_ckpt_files) != self.world_size or self.with_merged:
+                # merge the checkpoint files from all ranks and broadcast to all ranks
+                torch.distributed.barrier()
+                if self.local_rank == 0:
+                    logger.info(f"Merging checkpoint files from {resume_from}")
+                    state_dicts = [torch.load(f, map_location='cpu', weights_only=False) for f in rank_ckpt_files.values()]
+                    module_state_dict, opt_state_dict = nnscaler.merge_state_dicts(
+                        [s['model'] for s in state_dicts],
+                        [s['optimizer'] for s in state_dicts]
+                    )
+                    state_dict = {
+                        'model': module_state_dict if self.should_load_model else None,
+                        'optimizer': opt_state_dict if self.should_load_optimizer else None,
+                    }
+                else:
+                    state_dict = None
+
+                load_from_merged = True
+                logger.info(f"Broadcasting merged checkpoint to all ranks.")
+                state_dict = self._broadcast_merged_state_dict(
+                    state_dict, src_rank=self.local_rank0, dst_ranks=self.local_ranks
+                )
+                logger.info(f"Broadcasted merged checkpoint to all ranks.")
+            else:
+                resume_from = resume_from / f'{self.rank}.ckpt'
+                state_dict = torch.load(resume_from, map_location='cpu', weights_only=False)
 
         model = self.model if self.should_load_model else None
         optimizer = self.optimizer if self.should_load_optimizer else None
 
-        if self.load_type == 'merged': # it is a merged state dict
+        if load_from_merged:
             nnscaler.load_merged_state_dict(
                 model, state_dict['model'],
                 optimizer, state_dict['optimizer'],

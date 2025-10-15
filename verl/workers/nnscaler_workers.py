@@ -539,6 +539,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
                 lr_scheduler=self.actor_optimizer_scheduler,
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_contents=self.config.actor.checkpoint,
+                n_gpus_per_node=self.config.actor.nnscaler.get("n_gpus_per_node", 1),
                 with_merged=self.config.actor.nnscaler.get("with_merged", False),
                 load_type=self.config.actor.nnscaler.get("load_type", "deduped"),
                 save_type=self.config.actor.nnscaler.get("save_type", "deduped"),
