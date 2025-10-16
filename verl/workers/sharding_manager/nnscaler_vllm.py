@@ -212,6 +212,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
 
     @GPUMemoryLogger(role="fsdp vllm sharding_manager", logger=logger)
     def __exit__(self, exc_type, exc_value, traceback):
+        log_gpu_memory_usage("Before sleep and empty_cache in sharding manager", logger=logger)
         # TODO(ZSL): check this
         if vllm_version in (
             "0.5.4",
@@ -226,6 +227,7 @@ class NNScalerVLLMShardingManager(BaseShardingManager):
 
         # add empty cache after each compute
         get_torch_device().empty_cache()
+        log_gpu_memory_usage("After sleep and empty_cache in sharding manager", logger=logger)
 
         # restore random states
         if self.device_mesh is not None:
