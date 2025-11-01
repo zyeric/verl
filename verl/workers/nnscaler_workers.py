@@ -273,6 +273,7 @@ class ActorRolloutRefWorker(NNScalerWorker, DistProfilerExtension):
             pas_policy=pas_autodist,
             compute_config=compute_config,
             instance_name=instance_name,
+            broadcast_strategy='all',
         )
         p_module = p_module.to(device=get_device_id())
 
